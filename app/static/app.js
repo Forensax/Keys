@@ -1,5 +1,50 @@
 (function () {
   const toast = document.querySelector("[data-copy-toast]");
+  const responseTooltip = document.querySelector("[data-response-tooltip-popup]");
+  let activeResponseTarget = null;
+
+  function positionResponseTooltip() {
+    if (!responseTooltip || !activeResponseTarget || responseTooltip.hidden) {
+      return;
+    }
+
+    const targetRect = activeResponseTarget.getBoundingClientRect();
+    const tooltipRect = responseTooltip.getBoundingClientRect();
+    const viewportPadding = 12;
+    const gap = 8;
+    const maxLeft = Math.max(viewportPadding, window.innerWidth - tooltipRect.width - viewportPadding);
+    const left = Math.min(Math.max(targetRect.left, viewportPadding), maxLeft);
+    const above = targetRect.top - tooltipRect.height - gap;
+    const top = above >= viewportPadding
+      ? above
+      : Math.min(targetRect.bottom + gap, window.innerHeight - tooltipRect.height - viewportPadding);
+
+    responseTooltip.style.left = `${left}px`;
+    responseTooltip.style.top = `${Math.max(viewportPadding, top)}px`;
+  }
+
+  function showResponseTooltip(target) {
+    if (!responseTooltip || !target) {
+      return;
+    }
+    const text = target.dataset.responseTooltip;
+    if (!text) {
+      return;
+    }
+    activeResponseTarget = target;
+    responseTooltip.textContent = text;
+    responseTooltip.hidden = false;
+    positionResponseTooltip();
+  }
+
+  function hideResponseTooltip(target) {
+    if (!responseTooltip || (target && target !== activeResponseTarget)) {
+      return;
+    }
+    responseTooltip.hidden = true;
+    responseTooltip.textContent = "";
+    activeResponseTarget = null;
+  }
 
   function showToast(message, isError) {
     if (!toast) {
@@ -82,5 +127,36 @@
       target.classList.remove("copying");
     }
   });
+
+  document.addEventListener("mouseover", (event) => {
+    const target = event.target.closest("[data-response-tooltip]");
+    if (target && !target.contains(event.relatedTarget)) {
+      showResponseTooltip(target);
+    }
+  });
+
+  document.addEventListener("mouseout", (event) => {
+    const target = event.target.closest("[data-response-tooltip]");
+    if (target && !target.contains(event.relatedTarget)) {
+      hideResponseTooltip(target);
+    }
+  });
+
+  document.addEventListener("focusin", (event) => {
+    const target = event.target.closest("[data-response-tooltip]");
+    if (target) {
+      showResponseTooltip(target);
+    }
+  });
+
+  document.addEventListener("focusout", (event) => {
+    const target = event.target.closest("[data-response-tooltip]");
+    if (target) {
+      hideResponseTooltip(target);
+    }
+  });
+
+  window.addEventListener("resize", positionResponseTooltip);
+  window.addEventListener("scroll", positionResponseTooltip, true);
 
 })();

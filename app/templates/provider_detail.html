@@ -136,7 +136,7 @@
             <th>客户端模式</th>
             <th>状态</th>
             <th>延迟</th>
-            <th>错误</th>
+            <th>响应</th>
           </tr>
         </thead>
         <tbody>
@@ -147,7 +147,18 @@
               <td>{{ client_profile_labels.get(test.client_profile, test.client_profile) }}</td>
               <td><span class="status {{ test.status }}">{{ "成功" if test.status == "success" else "失败" }}</span></td>
               <td>{{ test.latency_ms if test.latency_ms is not none else "" }}{% if test.latency_ms is not none %} ms{% endif %}</td>
-              <td class="narrow">{{ test.error_message }}</td>
+              {% if test.status == "success" %}
+                {% set response_text = test.raw_response_excerpt or "成功（响应正文为空）" %}
+              {% else %}
+                {% set response_text = test.error_message %}
+              {% endif %}
+              <td class="response-cell">
+                <span
+                  class="response-preview"
+                  data-response-tooltip="{{ response_text }}"
+                  tabindex="0"
+                >{{ response_text }}</span>
+              </td>
             </tr>
           {% endfor %}
         </tbody>

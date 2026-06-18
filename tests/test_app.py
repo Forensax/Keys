@@ -285,6 +285,48 @@ def test_detail_allows_manual_model_and_temporary_profile(monkeypatch) -> None:
         assert test is not None and test.client_profile == CLIENT_PROFILE_CLAUDE_CODE
 
 
+def test_detail_response_column_uses_success_response_and_failure_error() -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                ConnectivityTest(
+                    provider_id=provider_id,
+                    model_id="success-model",
+                    status="success",
+                    raw_response_excerpt='{"output":"pong"}',
+                ),
+                ConnectivityTest(
+                    provider_id=provider_id,
+                    model_id="empty-model",
+                    status="success",
+                    raw_response_excerpt="",
+                ),
+                ConnectivityTest(
+                    provider_id=provider_id,
+                    model_id="failed-model",
+                    status="failed",
+                    error_message="HTTP 400: request rejected",
+                    raw_response_excerpt='{"error":"detail"}',
+                ),
+            ]
+        )
+        db.commit()
+
+    response = client.get(f"/providers/{provider_id}")
+
+    assert response.status_code == 200
+    assert "<th>响应</th>" in response.text
+    assert "<th>错误</th>" not in response.text
+    assert '{&#34;output&#34;:&#34;pong&#34;}' in response.text
+    assert "成功（响应正文为空）" in response.text
+    assert "HTTP 400: request rejected" in response.text
+    assert '{&#34;error&#34;:&#34;detail&#34;}' not in response.text
+    assert response.text.count('data-response-tooltip="') == 3
+
+
 def test_invalid_client_profile_is_rejected() -> None:
     reset_db()
     client = TestClient(app)
