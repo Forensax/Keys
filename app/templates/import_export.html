@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}导入/导出 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>导入/导出</h1>
+    <p class="muted">用于迁移中转站配置，或保留 JSON 备份。</p>
+  </div>
+</section>
+
+<section class="split">
+  <div class="panel">
+    <h2>导出 JSON</h2>
+    <form class="stack" method="post" action="/export">
+      <label class="checkbox-row">
+        <input type="checkbox" name="include_secrets">
+        包含明文 API Key
+      </label>
+      <label>
+        密码确认
+        <input type="password" name="password" autocomplete="current-password" placeholder="仅导出 API Key 时需要填写">
+      </label>
+      <button class="primary" type="submit">导出</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>导入 JSON</h2>
+    <form class="stack" method="post" action="/import" enctype="multipart/form-data">
+      <label>
+        JSON 文件
+        <input type="file" name="file" accept="application/json,.json" required>
+      </label>
+      <button class="primary" type="submit">导入</button>
+    </form>
+    <p class="muted small">新增中转站时导入文件必须包含 `api_key`；更新已有中转站时可以不提供。</p>
+  </div>
+</section>
+{% endblock %}

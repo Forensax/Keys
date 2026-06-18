@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "新增中转站" if mode == "new" else "编辑中转站" }} · {{ app_name }}{% endblock %}
+
+{% block content %}
+{% set values = form if form is defined else {} %}
+<section class="section-head">
+  <div>
+    <h1>{{ "新增中转站" if mode == "new" else "编辑中转站" }}</h1>
+    {% if provider %}
+      <p class="muted">已保存 Key：<span class="mono">{{ provider.key_hint }}</span></p>
+    {% else %}
+      <p class="muted">保存一个标准 OpenAI 兼容接口地址。</p>
+    {% endif %}
+  </div>
+  <a class="button" href="{{ '/providers/' ~ provider.id if provider else '/' }}">取消</a>
+</section>
+
+{% if errors %}
+  <div class="form-error">
+    {% for error in errors %}
+      <div>{{ error }}</div>
+    {% endfor %}
+  </div>
+{% endif %}
+
+<form class="panel form-grid" method="post" action="{{ '/providers' if mode == 'new' else '/providers/' ~ provider.id }}">
+  <label>
+    名称
+    <input name="name" value="{{ values.name if values else provider.name if provider else '' }}" required>
+  </label>
+
+  <label>
+    Base URL
+    <input name="base_url" value="{{ values.base_url if values else provider.base_url if provider else '' }}" placeholder="https://example.com/v1" required>
+  </label>
+
+  <label>
+    API Key
+    <input name="api_key" type="password" autocomplete="off" placeholder="{{ '留空则保留现有 Key' if provider else 'sk-...' }}" {{ 'required' if not provider else '' }}>
+  </label>
+
+  <label class="checkbox-row">
+    {% set enabled_checked = values.enabled if values else (provider.enabled if provider else true) %}
+    <input type="checkbox" name="enabled" {% if enabled_checked %}checked{% endif %}>
+    启用
+  </label>
+
+  <label class="wide">
+    备注
+    <textarea name="notes" rows="5">{{ values.notes if values else provider.notes if provider else '' }}</textarea>
+  </label>
+
+  <div class="form-actions wide">
+    <button class="primary" type="submit">{{ "创建中转站" if mode == "new" else "保存修改" }}</button>
+  </div>
+</form>
+{% endblock %}

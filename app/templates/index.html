@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block title %}中转站 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>中转站</h1>
+    <p class="muted">共 {{ providers|length }} 个 OpenAI 兼容中转站</p>
+  </div>
+  <a class="button primary" href="/providers/new">新增中转站</a>
+</section>
+
+{% if providers %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>Base URL</th>
+          <th>Key</th>
+          <th>模型</th>
+          <th>最近测试</th>
+          <th>启用</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for provider in providers %}
+          {% set latest = provider.tests[0] if provider.tests else None %}
+          <tr>
+            <td><a class="strong-link" href="/providers/{{ provider.id }}">{{ provider.name }}</a></td>
+            <td class="mono narrow">
+              <button
+                class="copy-value mono"
+                type="button"
+                data-copy-value="{{ provider.base_url }}"
+                title="点击复制 Base URL"
+              >{{ provider.base_url }}</button>
+            </td>
+            <td class="mono">
+              <button
+                class="copy-value mono"
+                type="button"
+                data-copy-secret-url="/providers/{{ provider.id }}/api-key"
+                title="点击复制完整 API Key"
+              >{{ provider.key_hint }}</button>
+            </td>
+            <td class="model-cell">
+              {% if provider.models %}
+                <div class="model-chip-list">
+                  {% for model in provider.models[:6] %}
+                    <button
+                      class="model-chip mono"
+                      type="button"
+                      data-copy-value="{{ model.model_id }}"
+                      title="点击复制模型名称"
+                    >{{ model.model_id }}</button>
+                  {% endfor %}
+                  {% if provider.models|length > 6 %}
+                    <span class="muted small">+{{ provider.models|length - 6 }}</span>
+                  {% endif %}
+                </div>
+              {% else %}
+                <span class="muted">无</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if latest %}
+                <span class="status {{ latest.status }}">{{ "成功" if latest.status == "success" else "失败" }}</span>
+                <span class="muted small">{{ latest.model_id }}{% if latest.latency_ms %} · {{ latest.latency_ms }} ms{% endif %}</span>
+              {% else %}
+                <span class="muted">未测试</span>
+              {% endif %}
+            </td>
+            <td>
+              <span class="status {{ 'success' if provider.enabled else 'disabled' }}">{{ "是" if provider.enabled else "否" }}</span>
+            </td>
+            <td class="actions">
+              <a class="button small" href="/providers/{{ provider.id }}">打开</a>
+              <a class="button small" href="/providers/{{ provider.id }}/edit">编辑</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <div class="empty panel">
+    <h2>还没有中转站</h2>
+    <p class="muted">添加第一个中转站，保存它的 Base URL 和 API Key。</p>
+    <a class="button primary" href="/providers/new">新增中转站</a>
+  </div>
+{% endif %}
+{% endblock %}

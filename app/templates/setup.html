@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}初始化 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+  <div class="panel auth-panel">
+    <h1>初始化 {{ app_name }}</h1>
+    <p class="muted">创建用于登录和加密 API Key 的应用密码。</p>
+    {% if error %}<div class="form-error">{{ error }}</div>{% endif %}
+    <form method="post" action="/setup" class="stack">
+      <label>
+        密码
+        <input type="password" name="password" minlength="8" autocomplete="new-password" required autofocus>
+      </label>
+      <label>
+        确认密码
+        <input type="password" name="confirm_password" minlength="8" autocomplete="new-password" required>
+      </label>
+      <button class="primary" type="submit">完成初始化</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

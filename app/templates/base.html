@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">{{ app_name }}</a>
+      {% if authenticated %}
+        <nav class="nav">
+          <a href="/">中转站</a>
+          <a href="/providers/new">新增</a>
+          <a href="/import-export">导入/导出</a>
+          <form method="post" action="/logout">
+            <button class="link-button" type="submit">退出登录</button>
+          </form>
+        </nav>
+      {% endif %}
+    </header>
+
+    <main class="page">
+      {% if flash %}
+        <div class="flash {{ flash.level }}">{{ flash.message }}</div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+    <div class="copy-toast" data-copy-toast aria-live="polite"></div>
+    <script src="{{ url_for('static', path='/app.js') }}"></script>
+  </body>
+</html>

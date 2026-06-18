@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}登录 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+  <div class="panel auth-panel">
+    <h1>解锁 {{ app_name }}</h1>
+    <p class="muted">登录后可以管理中转站，并解密已保存的 API Key。</p>
+    {% if error %}<div class="form-error">{{ error }}</div>{% endif %}
+    <form method="post" action="/login" class="stack">
+      <label>
+        密码
+        <input type="password" name="password" autocomplete="current-password" required autofocus>
+      </label>
+      <button class="primary" type="submit">登录</button>
+    </form>
+  </div>
+</section>
+{% endblock %}
