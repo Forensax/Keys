@@ -60,7 +60,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 18000
 
 ## Docker Compose 部署
 
-项目提供 `Dockerfile` 和 `docker-compose.yml`，应用镜像使用 LinkOS 公共镜像站的 `docker.linkos.org/library/python:3.11-slim` 作为基础镜像。
+项目提供 `Dockerfile` 和 `docker-compose.yml`，应用镜像使用 LinkOS 公共镜像站的 `docker.linkos.org/library/python:3.11-slim` 作为基础镜像。Docker 构建默认通过阿里云 PyPI 镜像安装 Python 依赖，以缩短国内网络环境下的构建时间。
 
 首次部署时创建环境变量文件：
 
@@ -79,6 +79,25 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```powershell
 docker compose build --pull
 docker compose up -d
+```
+
+如需切换 PyPI 镜像，在 `.env` 中修改：
+
+```dotenv
+DOCKER_PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+```
+
+例如切回 PyPI 官方源：
+
+```dotenv
+DOCKER_PIP_INDEX_URL=https://pypi.org/simple/
+```
+
+也可以只为单次构建临时指定：
+
+```powershell
+$env:DOCKER_PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple/"
+docker compose build --pull
 ```
 
 常用管理命令：
@@ -137,6 +156,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 18000
 - `SESSION_SECRET`：Cookie 签名密钥。开发环境可以省略，但生产或公网部署必须显式设置。
 - `HOST`、`PORT`：用于文档说明的本地运行默认值。
 - `DOCKER_BIND_ADDRESS`：Docker Compose 发布端口时绑定的宿主机地址，默认是 `0.0.0.0`。
+- `DOCKER_PIP_INDEX_URL`：Docker 构建时使用的 PyPI 镜像，默认是阿里云镜像；只影响镜像构建，不影响应用运行。
 - `COOKIE_SECURE`：通过 HTTPS 访问时设为 `true`。
 - `REQUEST_TIMEOUT_SECONDS`：访问中转站接口时的请求超时时间。
 - `PROXY_TEST_URL`：代理出口测试的固定目标，默认是 `https://api.ipify.org?format=json`。该值只能由部署环境配置，不能从网页提交。

@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: "${DOCKER_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
     init: true
     restart: unless-stopped
     ports:
