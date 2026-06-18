@@ -53,6 +53,60 @@ conda activate keys
 uvicorn app.main:app --reload --host 127.0.0.1 --port 18000
 ```
 
+## Docker Compose 部署
+
+项目提供 `Dockerfile` 和 `docker-compose.yml`，应用镜像使用 LinkOS 公共镜像站的 `docker.linkos.org/library/python:3.11-slim` 作为基础镜像。
+
+首次部署时创建环境变量文件：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+打开 `.env`，务必把 `SESSION_SECRET` 替换为足够长的随机字符串。可以使用下面的命令生成：
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+构建并启动容器：
+
+```powershell
+docker compose build --pull
+docker compose up -d
+```
+
+常用管理命令：
+
+```powershell
+# 查看运行状态
+docker compose ps
+
+# 持续查看应用日志
+docker compose logs -f keys
+
+# 停止并删除容器，不会删除 ./data 中的数据库
+docker compose down
+```
+
+更新代码后重新构建并启动：
+
+```powershell
+git pull
+docker compose build --pull
+docker compose up -d
+```
+
+容器内的 SQLite 数据库固定为 `/app/data/keys.db`，并通过 `./data:/app/data` 保存到宿主机，因此重建容器不会删除中转站数据。备份时复制宿主机的 `data/keys.db` 即可。
+
+Compose 默认通过 `0.0.0.0:18000` 向所有网络接口开放服务。只允许本机访问时，在 `.env` 中设置：
+
+```dotenv
+DOCKER_BIND_ADDRESS=127.0.0.1
+```
+
+如果宿主机已有程序占用 `18000`，请先停止该程序，或者修改 `.env` 中的 `PORT`。公网部署必须配置防火墙和 HTTPS 反向代理。
+
 ## 公网部署注意事项
 
 这个工具按个人使用场景设计。如果你要把它暴露到公网，请务必注意：
@@ -77,6 +131,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 18000
 - `DATABASE_URL`：SQLAlchemy 数据库地址，默认是 `sqlite:///./data/keys.db`。
 - `SESSION_SECRET`：Cookie 签名密钥。开发环境可以省略，但生产或公网部署必须显式设置。
 - `HOST`、`PORT`：用于文档说明的本地运行默认值。
+- `DOCKER_BIND_ADDRESS`：Docker Compose 发布端口时绑定的宿主机地址，默认是 `0.0.0.0`。
 - `COOKIE_SECURE`：通过 HTTPS 访问时设为 `true`。
 - `REQUEST_TIMEOUT_SECONDS`：访问中转站接口时的请求超时时间。
 
