@@ -13,6 +13,7 @@ from app.db import (  # noqa: E402
     ensure_client_profile_columns,
     ensure_provider_archive_column,
     ensure_proxy_columns,
+    ensure_test_preference_columns,
 )
 from app.main import app  # noqa: E402
 from app.models import ConnectivityTest, NetworkProxy, Provider, ProviderModel  # noqa: E402
@@ -296,6 +297,26 @@ def test_proxy_columns_are_added_to_existing_sqlite_tables(tmp_path) -> None:
     old_engine.dispose()
 
 
+def test_test_preference_columns_are_added_to_existing_provider_table(tmp_path) -> None:
+    old_engine = create_engine(f"sqlite:///{tmp_path / 'old-test-preferences.db'}")
+    with old_engine.begin() as connection:
+        connection.execute(text("CREATE TABLE providers (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL)"))
+        connection.execute(text("INSERT INTO providers (name) VALUES ('Legacy')"))
+
+    ensure_test_preference_columns(old_engine)
+
+    columns = {column["name"] for column in inspect(old_engine).get_columns("providers")}
+    assert {"test_model_id", "test_client_profile", "test_network_route"}.issubset(columns)
+    with old_engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT test_model_id, test_client_profile, test_network_route FROM providers")
+        ).one()
+    assert row.test_model_id is None
+    assert row.test_client_profile is None
+    assert row.test_network_route == "default"
+    old_engine.dispose()
+
+
 def test_detail_allows_manual_model_and_temporary_profile(monkeypatch) -> None:
     reset_db()
     client = TestClient(app)
@@ -330,6 +351,9 @@ def test_detail_allows_manual_model_and_temporary_profile(monkeypatch) -> None:
         provider = db.get(Provider, provider_id)
         test = db.scalar(select(ConnectivityTest).where(ConnectivityTest.provider_id == provider_id))
         assert provider is not None and provider.client_profile == "openai_chat"
+        assert provider.test_model_id == "manual-model"
+        assert provider.test_client_profile == CLIENT_PROFILE_CLAUDE_CODE
+        assert provider.test_network_route == "default"
         assert test is not None and test.client_profile == CLIENT_PROFILE_CLAUDE_CODE
 
 
@@ -650,7 +674,10 @@ def test_disabled_default_proxy_rejects_requests_without_direct_fallback(monkeyp
     assert "已禁用" in refresh.text
     assert "已禁用" in tested.text
     with SessionLocal() as db:
-        assert db.scalar(select(ConnectivityTest).where(ConnectivityTest.provider_id == provider_id)) is None
+        test = db.scalar(select(ConnectivityTest).where(ConnectivityTest.provider_id == provider_id))
+        assert test is not None
+        assert test.status == "failed"
+        assert "已禁用" in test.error_message
 
 
 def test_referenced_proxy_cannot_be_deleted() -> None:
@@ -671,7 +698,7 @@ def test_referenced_proxy_cannot_be_deleted() -> None:
 
     response = client.post(f"/proxies/{proxy_id}/delete", follow_redirects=True)
 
-    assert "仍有 1 个中转站使用该默认代理" in response.text
+    assert "仍有 1 个中转站引用该代理" in response.text
     with SessionLocal() as db:
         assert db.get(NetworkProxy, proxy_id) is not None
 
@@ -714,13 +741,23 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
             "default_proxy_id": str(proxy_id),
         },
     )
+    with SessionLocal() as db:
+        provider = db.scalar(select(Provider).where(Provider.name == "Proxy Relay"))
+        assert provider is not None
+        provider.test_model_id = "gpt-batch"
+        provider.test_client_profile = CLIENT_PROFILE_CODEX
+        provider.test_network_route = f"proxy:{proxy_id}"
+        db.commit()
 
     public_export = client.post("/export", data={"password": ""}).json()
-    assert public_export["version"] == 2
+    assert public_export["version"] == 3
     assert public_export["proxies"][0]["has_auth"] is True
     assert "username" not in public_export["proxies"][0]
     assert "password" not in public_export["proxies"][0]
     assert public_export["providers"][0]["default_proxy"] == "Local Proxy"
+    assert public_export["providers"][0]["test_model_id"] == "gpt-batch"
+    assert public_export["providers"][0]["test_client_profile"] == CLIENT_PROFILE_CODEX
+    assert public_export["providers"][0]["test_network_route"] == "proxy:Local Proxy"
 
     secret_response = client.post(
         "/export",
@@ -753,3 +790,161 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
         provider = db.scalar(select(Provider).where(Provider.name == "Proxy Relay"))
         assert provider is not None and provider.default_proxy is not None
         assert provider.default_proxy.name == "Local Proxy"
+        assert provider.test_model_id == "gpt-batch"
+        assert provider.test_client_profile == CLIENT_PROFILE_CODEX
+        assert provider.test_network_route == f"proxy:{provider.default_proxy.id}"
+
+
+def test_test_preferences_endpoint_saves_partial_updates_and_detail_selection() -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+
+    model_response = client.post(
+        f"/providers/{provider_id}/test-preferences",
+        data={"model_id": "manual-batch-model"},
+        headers={"accept": "application/json"},
+    )
+    profile_response = client.post(
+        f"/providers/{provider_id}/test-preferences",
+        data={"client_profile": CLIENT_PROFILE_CODEX},
+        headers={"accept": "application/json"},
+    )
+    route_response = client.post(
+        f"/providers/{provider_id}/test-preferences",
+        data={"network_route": "direct"},
+        headers={"accept": "application/json"},
+    )
+
+    assert model_response.status_code == profile_response.status_code == route_response.status_code == 200
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        assert provider.test_model_id == "manual-batch-model"
+        assert provider.test_client_profile == CLIENT_PROFILE_CODEX
+        assert provider.test_network_route == "direct"
+    detail = client.get(f"/providers/{provider_id}").text
+    assert 'value="manual-batch-model"' in detail
+    assert f'<option value="{CLIENT_PROFILE_CODEX}" selected>' in detail
+    assert '<option value="direct" selected>' in detail
+    assert "data-test-preferences" in detail
+    assert "测试配置已保存" in detail
+
+
+def test_saved_test_uses_persisted_preferences_and_returns_json(monkeypatch) -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+    client.post(
+        f"/providers/{provider_id}/test-preferences",
+        data={"model_id": "saved-model", "client_profile": CLIENT_PROFILE_CLAUDE_CODE, "network_route": "direct"},
+    )
+    calls: list[tuple[str, str, str | None]] = []
+
+    async def fake_test(base_url, api_key, model_id, client_profile, proxy_url=None):
+        calls.append((model_id, client_profile, proxy_url))
+        return ConnectivityTestResult("success", 17, "", '{"result":"pong"}')
+
+    monkeypatch.setattr(main_module, "run_connectivity_test", fake_test)
+    response = client.post(
+        f"/providers/{provider_id}/test-saved",
+        headers={"accept": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
+    assert response.json()["model_id"] == "saved-model"
+    assert response.json()["latency_ms"] == 17
+    assert calls == [("saved-model", CLIENT_PROFILE_CLAUDE_CODE, None)]
+    with SessionLocal() as db:
+        test = db.scalar(select(ConnectivityTest).where(ConnectivityTest.provider_id == provider_id))
+        assert test is not None and test.network_route == "直连"
+
+
+def test_saved_test_records_missing_model_without_external_request(monkeypatch) -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+    called = False
+
+    async def should_not_call(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("不应发起外部请求")
+
+    monkeypatch.setattr(main_module, "run_connectivity_test", should_not_call)
+    response = client.post(
+        f"/providers/{provider_id}/test-saved",
+        headers={"accept": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert "未配置测试模型" in response.json()["error_message"]
+    assert called is False
+    with SessionLocal() as db:
+        test = db.scalar(select(ConnectivityTest).where(ConnectivityTest.provider_id == provider_id))
+        assert test is not None and test.model_id == "（未配置模型）"
+
+
+def test_saved_test_skips_disabled_provider_without_writing_history(monkeypatch) -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        provider.enabled = False
+        db.commit()
+
+    response = client.post(
+        f"/providers/{provider_id}/test-saved",
+        headers={"accept": "application/json"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["status"] == "skipped"
+    with SessionLocal() as db:
+        assert db.scalar(select(ConnectivityTest).where(ConnectivityTest.provider_id == provider_id)) is None
+
+
+def test_index_exposes_test_all_and_eligible_provider_rows() -> None:
+    reset_db()
+    client = TestClient(app)
+    enabled_id = setup_and_create_provider(client, "Enabled Relay")
+    create = client.post(
+        "/providers",
+        data={
+            "name": "Disabled Relay",
+            "base_url": "https://disabled.example/v1",
+            "api_key": "sk-disabled",
+        },
+        follow_redirects=False,
+    )
+    disabled_id = int(create.headers["location"].rsplit("/", 1)[-1])
+
+    page = client.get("/").text
+
+    assert "data-test-all" in page
+    assert ">测试全部</button>" in page
+    assert f'data-provider-id="{enabled_id}" data-provider-enabled="true"' in page
+    assert f'data-provider-id="{disabled_id}" data-provider-enabled="false"' in page
+    assert page.count("data-test-result") == 2
+
+
+def test_proxy_delete_rejects_saved_test_route_reference() -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    proxy_id = create_proxy(client)
+    provider_id = setup_and_create_provider(client, "Saved Route Relay")
+    client.post(
+        f"/providers/{provider_id}/test-preferences",
+        data={"network_route": f"proxy:{proxy_id}"},
+    )
+
+    response = client.post(f"/proxies/{proxy_id}/delete", follow_redirects=True)
+
+    assert "仍有 1 个中转站引用该代理" in response.text
+    with SessionLocal() as db:
+        assert db.get(NetworkProxy, proxy_id) is not None

@@ -703,6 +703,16 @@ tr:last-child td {
   color: #60697a;
 }
 
+.status.testing {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.preference-save-status {
+  margin: -2px 0 0;
+  min-height: 18px;
+}
+
 .empty {
   align-items: flex-start;
   display: grid;

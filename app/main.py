@@ -178,7 +178,12 @@ def resolve_network_route(
     return build_proxy_url(proxy, fernet), proxy.name
 
 
-def serialize_provider(provider: Provider, include_secret: bool = False, api_key: str | None = None) -> dict[str, Any]:
+def serialize_provider(
+    provider: Provider,
+    include_secret: bool = False,
+    api_key: str | None = None,
+    test_network_route: str | None = None,
+) -> dict[str, Any]:
     latest_test = provider.tests[0] if provider.tests else None
     payload: dict[str, Any] = {
         "name": provider.name,
@@ -186,6 +191,9 @@ def serialize_provider(provider: Provider, include_secret: bool = False, api_key
         "notes": provider.notes,
         "enabled": provider.enabled,
         "client_profile": provider.client_profile,
+        "test_model_id": provider.test_model_id,
+        "test_client_profile": provider.test_client_profile,
+        "test_network_route": test_network_route or provider.test_network_route or "default",
         "default_proxy": provider.default_proxy.name if provider.default_proxy else None,
         "archived_at": provider.archived_at.isoformat() if provider.archived_at else None,
         "key_hint": provider.key_hint,
@@ -300,6 +308,61 @@ def get_default_model_id(provider: Provider) -> str | None:
     if latest_test and latest_test.model_id in model_ids:
         return latest_test.model_id
     return provider.models[0].model_id
+
+
+def get_test_preferences(provider: Provider) -> tuple[str | None, str, str]:
+    return (
+        provider.test_model_id or get_default_model_id(provider),
+        provider.test_client_profile or provider.client_profile,
+        provider.test_network_route or "default",
+    )
+
+
+def validate_test_network_route(
+    db: Session,
+    route: str,
+    current_route: str | None = None,
+) -> str | None:
+    if route in {"default", "direct"}:
+        return None
+    if not route.startswith("proxy:"):
+        return "网络路径无效。"
+    try:
+        proxy_id = int(route.removeprefix("proxy:"))
+    except ValueError:
+        return "网络路径无效。"
+    proxy = db.get(NetworkProxy, proxy_id)
+    if proxy is None:
+        return "所选网络代理不存在。"
+    if not proxy.enabled and route != current_route:
+        return "不能选择已禁用的网络代理。"
+    return None
+
+
+def network_route_snapshot(db: Session, provider: Provider, route: str) -> str:
+    if route == "direct":
+        return "直连"
+    if route == "default":
+        return provider.default_proxy.name if provider.default_proxy else "直连"
+    if route.startswith("proxy:"):
+        try:
+            proxy_id = int(route.removeprefix("proxy:"))
+        except ValueError:
+            return "无效网络路径"
+        proxy = db.get(NetworkProxy, proxy_id)
+        return proxy.name if proxy else f"已删除代理 #{proxy_id}"
+    return "无效网络路径"
+
+
+def serialize_test_network_route(db: Session, route: str) -> str:
+    if not route.startswith("proxy:"):
+        return route
+    try:
+        proxy_id = int(route.removeprefix("proxy:"))
+    except ValueError:
+        return route
+    proxy = db.get(NetworkProxy, proxy_id)
+    return f"proxy:{proxy.name}" if proxy else route
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -543,9 +606,13 @@ def proxy_delete(
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     proxy = proxy_or_404(db, proxy_id)
-    references = len(list(db.scalars(select(Provider.id).where(Provider.default_proxy_id == proxy.id)).all()))
+    default_references = set(db.scalars(select(Provider.id).where(Provider.default_proxy_id == proxy.id)).all())
+    test_references = set(
+        db.scalars(select(Provider.id).where(Provider.test_network_route == f"proxy:{proxy.id}")).all()
+    )
+    references = len(default_references | test_references)
     if references:
-        flash(request, f"无法删除：仍有 {references} 个中转站使用该默认代理。", "error")
+        flash(request, f"无法删除：仍有 {references} 个中转站引用该代理。", "error")
         return redirect("/proxies")
     db.delete(proxy)
     db.commit()
@@ -633,6 +700,8 @@ def provider_create(
         notes=notes.strip(),
         enabled=enabled == "on",
         client_profile=client_profile,
+        test_client_profile=client_profile,
+        test_network_route="default",
         default_proxy_id=default_proxy.id if default_proxy else None,
     )
     db.add(provider)
@@ -664,13 +733,16 @@ def provider_detail(
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     provider = provider_or_404(db, provider_id)
+    test_model_id, test_client_profile, test_network_route = get_test_preferences(provider)
     return render(
         request,
         "provider_detail.html",
         {
             "provider": provider,
-            "default_model_id": get_default_model_id(provider),
-            "proxies": [proxy for proxy in all_proxies(db) if proxy.enabled],
+            "default_model_id": test_model_id,
+            "test_client_profile": test_client_profile,
+            "test_network_route": test_network_route,
+            "proxies": all_proxies(db),
         },
     )
 
@@ -871,6 +943,153 @@ async def provider_refresh_models(
     return redirect(f"/providers/{provider.id}")
 
 
+def test_result_payload(test: ConnectivityTest) -> dict[str, Any]:
+    return {
+        "status": test.status,
+        "model_id": test.model_id,
+        "latency_ms": test.latency_ms,
+        "error_message": test.error_message,
+        "tested_at": test.tested_at.isoformat(),
+    }
+
+
+async def execute_provider_test(
+    request: Request,
+    db: Session,
+    provider: Provider,
+    model_id: str | None,
+    client_profile: str,
+    network_route: str,
+) -> ConnectivityTest:
+    clean_model_id = (model_id or "").strip()
+    stored_model_id = clean_model_id or "（未配置模型）"
+    stored_profile = client_profile if client_profile in VALID_CLIENT_PROFILES else provider.client_profile
+    route_label = network_route_snapshot(db, provider, network_route)
+    preflight_error = ""
+    if not clean_model_id:
+        preflight_error = "未配置测试模型。"
+    elif len(clean_model_id) > 260:
+        preflight_error = "模型名称不能超过 260 个字符。"
+    elif client_profile not in VALID_CLIENT_PROFILES:
+        preflight_error = "客户端模式无效。"
+
+    proxy_url: str | None = None
+    if not preflight_error:
+        try:
+            proxy_url, route_label = resolve_network_route(request, db, provider, network_route)
+        except Exception as exc:
+            preflight_error = sanitize_proxy_error(exc) if proxy_url else str(exc)
+
+    if preflight_error:
+        test = ConnectivityTest(
+            provider_id=provider.id,
+            model_id=stored_model_id,
+            client_profile=stored_profile,
+            status="failed",
+            latency_ms=None,
+            error_message=preflight_error,
+            raw_response_excerpt="",
+            network_route=route_label,
+            tested_at=utc_now(),
+        )
+    else:
+        try:
+            fernet = require_session_fernet(request)
+            api_key = decrypt_api_key_with_fernet(provider.encrypted_api_key, fernet)
+            result = await run_connectivity_test(
+                provider.base_url,
+                api_key,
+                clean_model_id,
+                client_profile,
+                proxy_url=proxy_url,
+            )
+            test = ConnectivityTest(
+                provider_id=provider.id,
+                model_id=clean_model_id,
+                client_profile=client_profile,
+                status=result.status,
+                latency_ms=result.latency_ms,
+                error_message=result.error_message,
+                raw_response_excerpt=result.raw_response_excerpt,
+                network_route=route_label,
+                tested_at=utc_now(),
+            )
+        except Exception as exc:
+            detail = sanitize_proxy_error(exc) if proxy_url else str(exc)
+            test = ConnectivityTest(
+                provider_id=provider.id,
+                model_id=clean_model_id,
+                client_profile=client_profile,
+                status="failed",
+                latency_ms=None,
+                error_message=detail,
+                raw_response_excerpt="",
+                network_route=route_label,
+                tested_at=utc_now(),
+            )
+
+    db.add(test)
+    db.commit()
+    db.refresh(test)
+    return test
+
+
+@app.post("/providers/{provider_id}/test-preferences")
+def provider_test_preferences(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    provider_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+    model_id: Annotated[str | None, Form()] = None,
+    client_profile: Annotated[str | None, Form()] = None,
+    network_route: Annotated[str | None, Form()] = None,
+) -> JSONResponse:
+    provider = provider_or_404(db, provider_id)
+    if provider.archived_at is not None:
+        return JSONResponse({"error": "已归档中转站不能修改测试配置。"}, status_code=409)
+    if model_id is None and client_profile is None and network_route is None:
+        return JSONResponse({"error": "没有需要保存的测试配置。"}, status_code=400)
+    if model_id is not None:
+        clean_model_id = model_id.strip()
+        if len(clean_model_id) > 260:
+            return JSONResponse({"error": "模型名称不能超过 260 个字符。"}, status_code=400)
+        provider.test_model_id = clean_model_id or None
+    if client_profile is not None:
+        if client_profile not in VALID_CLIENT_PROFILES:
+            return JSONResponse({"error": "客户端模式无效。"}, status_code=400)
+        provider.test_client_profile = client_profile
+    if network_route is not None:
+        route_error = validate_test_network_route(db, network_route, provider.test_network_route)
+        if route_error:
+            return JSONResponse({"error": route_error}, status_code=400)
+        provider.test_network_route = network_route
+    db.commit()
+    saved_model, saved_profile, saved_route = get_test_preferences(provider)
+    return JSONResponse(
+        {
+            "ok": True,
+            "model_id": saved_model,
+            "client_profile": saved_profile,
+            "network_route": saved_route,
+        }
+    )
+
+
+@app.post("/providers/{provider_id}/test-saved")
+async def provider_test_saved(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    provider_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> JSONResponse:
+    provider = provider_or_404(db, provider_id)
+    if provider.archived_at is not None or not provider.enabled:
+        return JSONResponse({"status": "skipped", "error_message": "中转站已禁用或归档。"}, status_code=409)
+    model_id, client_profile, network_route = get_test_preferences(provider)
+    test = await execute_provider_test(request, db, provider, model_id, client_profile, network_route)
+    return JSONResponse(test_result_payload(test))
+
+
 @app.post("/providers/{provider_id}/test")
 async def provider_test(
     request: Request,
@@ -896,59 +1115,20 @@ async def provider_test(
         flash(request, "客户端模式无效，未执行测试。", "error")
         return redirect(f"/providers/{provider.id}")
 
-    try:
-        proxy_url, route_label = resolve_network_route(request, db, provider, network_route)
-    except ValueError as exc:
-        flash(request, str(exc), "error")
+    route_error = validate_test_network_route(db, network_route, provider.test_network_route)
+    if route_error:
+        flash(request, route_error, "error")
         return redirect(f"/providers/{provider.id}")
-
-    fernet = require_session_fernet(request)
-    try:
-        api_key = decrypt_api_key_with_fernet(provider.encrypted_api_key, fernet)
-        result = await run_connectivity_test(
-            provider.base_url,
-            api_key,
-            model_id,
-            test_profile,
-            proxy_url=proxy_url,
-        )
-    except Exception as exc:
-        detail = sanitize_proxy_error(exc) if proxy_url else str(exc)
-        result = None
-        test = ConnectivityTest(
-            provider_id=provider.id,
-            model_id=model_id,
-            client_profile=test_profile,
-            status="failed",
-            latency_ms=None,
-            error_message=detail,
-            raw_response_excerpt="",
-            network_route=route_label,
-            tested_at=utc_now(),
-        )
-        db.add(test)
-        db.commit()
-        flash(request, f"连通性测试失败：{detail}", "error")
-        return redirect(f"/providers/{provider.id}")
-
-    test = ConnectivityTest(
-        provider_id=provider.id,
-        model_id=model_id,
-        client_profile=test_profile,
-        status=result.status,
-        latency_ms=result.latency_ms,
-        error_message=result.error_message,
-        raw_response_excerpt=result.raw_response_excerpt,
-        network_route=route_label,
-        tested_at=utc_now(),
-    )
-    db.add(test)
+    provider.test_model_id = model_id
+    provider.test_client_profile = test_profile
+    provider.test_network_route = network_route
     db.commit()
+    test = await execute_provider_test(request, db, provider, model_id, test_profile, network_route)
     profile_name = client_profile_label(test_profile)
-    if result.status == "success":
-        flash(request, f"{profile_name}连通性测试成功，耗时 {result.latency_ms} ms。")
+    if test.status == "success":
+        flash(request, f"{profile_name}连通性测试成功，耗时 {test.latency_ms} ms。")
     else:
-        flash(request, f"{profile_name}连通性测试失败：{result.error_message}", "error")
+        flash(request, f"{profile_name}连通性测试失败：{test.error_message}", "error")
     return redirect(f"/providers/{provider.id}")
 
 
@@ -982,7 +1162,7 @@ def export_json(
         .order_by(Provider.name)
     ).all()
     payload = {
-        "version": 2,
+        "version": 3,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "contains_secrets": include_secret_values,
         "proxies": [],
@@ -994,7 +1174,8 @@ def export_json(
         payload["proxies"].append(serialize_proxy(proxy, include_secret_values, username, proxy_password))
     for provider in providers:
         api_key = decrypt_api_key_with_fernet(provider.encrypted_api_key, fernet) if include_secret_values else None
-        payload["providers"].append(serialize_provider(provider, include_secret_values, api_key))
+        exported_route = serialize_test_network_route(db, provider.test_network_route or "default")
+        payload["providers"].append(serialize_provider(provider, include_secret_values, api_key, exported_route))
 
     content = json.dumps(payload, ensure_ascii=False, indent=2)
     return Response(
@@ -1085,6 +1266,29 @@ async def import_json(
         if not name or not base_url:
             errors.append(f"第 {index} 条：name 和 base_url 必填。")
             continue
+        test_model_value = item.get("test_model_id")
+        test_model_id = str(test_model_value).strip() if test_model_value not in (None, "") else None
+        if test_model_id and len(test_model_id) > 260:
+            errors.append(f"第 {index} 条：test_model_id 不能超过 260 个字符。")
+            continue
+        test_profile_value = item.get("test_client_profile")
+        test_client_profile = str(test_profile_value).strip() if test_profile_value not in (None, "") else None
+        if test_client_profile is not None and test_client_profile not in VALID_CLIENT_PROFILES:
+            errors.append(f"第 {index} 条：test_client_profile 无效。")
+            continue
+        imported_test_route = str(item.get("test_network_route") or "default").strip()
+        if imported_test_route in {"default", "direct"}:
+            test_network_route = imported_test_route
+        elif imported_test_route.startswith("proxy:"):
+            proxy_name = imported_test_route.removeprefix("proxy:").strip()
+            test_proxy = db.scalar(select(NetworkProxy).where(NetworkProxy.name == proxy_name))
+            if test_proxy is None:
+                errors.append(f"第 {index} 条：找不到测试网络代理“{proxy_name}”。")
+                continue
+            test_network_route = f"proxy:{test_proxy.id}"
+        else:
+            errors.append(f"第 {index} 条：test_network_route 无效。")
+            continue
         default_proxy_name = item.get("default_proxy")
         default_proxy: NetworkProxy | None = None
         if default_proxy_name not in (None, ""):
@@ -1109,6 +1313,9 @@ async def import_json(
                 notes=notes,
                 enabled=enabled,
                 client_profile=client_profile,
+                test_model_id=test_model_id,
+                test_client_profile=test_client_profile,
+                test_network_route=test_network_route,
                 default_proxy_id=default_proxy.id if default_proxy else None,
                 archived_at=archived_at,
             )
@@ -1119,6 +1326,9 @@ async def import_json(
             provider.notes = notes
             provider.enabled = enabled
             provider.client_profile = client_profile
+            provider.test_model_id = test_model_id
+            provider.test_client_profile = test_client_profile
+            provider.test_network_route = test_network_route
             provider.default_proxy_id = default_proxy.id if default_proxy else None
             provider.archived_at = archived_at
             if api_key:

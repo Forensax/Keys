@@ -62,6 +62,9 @@ class Provider(Base):
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     client_profile: Mapped[str] = mapped_column(String(32), nullable=False, default="openai_chat")
+    test_model_id: Mapped[str | None] = mapped_column(String(260), nullable=True)
+    test_client_profile: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    test_network_route: Mapped[str] = mapped_column(String(180), nullable=False, default="default")
     default_proxy_id: Mapped[int | None] = mapped_column(
         ForeignKey("network_proxies.id", ondelete="SET NULL"), nullable=True, index=True
     )

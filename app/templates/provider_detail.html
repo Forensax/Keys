@@ -90,12 +90,18 @@
   {% if not provider.archived_at %}
     <div class="panel">
       <h2>连通性测试</h2>
-      <form class="stack" method="post" action="/providers/{{ provider.id }}/test">
+      <form
+        class="stack"
+        method="post"
+        action="/providers/{{ provider.id }}/test"
+        data-test-preferences
+        data-provider-id="{{ provider.id }}"
+      >
         <label>
           客户端模式
           <select name="client_profile" required>
             {% for profile, label in client_profile_labels.items() %}
-              <option value="{{ profile }}" {% if profile == provider.client_profile %}selected{% endif %}>{{ label }}</option>
+              <option value="{{ profile }}" {% if profile == test_client_profile %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
           </select>
         </label>
@@ -119,13 +125,19 @@
         <label>
           网络路径
           <select name="network_route" required>
-            <option value="default">使用默认（{{ provider.default_proxy.name if provider.default_proxy else "直连" }}）</option>
-            <option value="direct">直连</option>
+            <option value="default" {% if test_network_route == 'default' %}selected{% endif %}>使用默认（{{ provider.default_proxy.name if provider.default_proxy else "直连" }}）</option>
+            <option value="direct" {% if test_network_route == 'direct' %}selected{% endif %}>直连</option>
             {% for proxy in proxies %}
-              <option value="proxy:{{ proxy.id }}">{{ proxy.name }} · {{ proxy.endpoint }}</option>
+              {% set route_value = 'proxy:' ~ proxy.id %}
+              <option
+                value="{{ route_value }}"
+                {% if test_network_route == route_value %}selected{% endif %}
+                {% if not proxy.enabled and test_network_route != route_value %}disabled{% endif %}
+              >{{ proxy.name }} · {{ proxy.endpoint }}{% if not proxy.enabled %}（已禁用）{% endif %}</option>
             {% endfor %}
           </select>
         </label>
+        <p class="muted small preference-save-status" data-preference-save-status aria-live="polite">测试配置已保存</p>
         <button class="primary" type="submit">运行连通性测试</button>
       </form>
       {% if not provider.models %}

@@ -8,7 +8,10 @@
     <h1>中转站</h1>
     <p class="muted">共 {{ providers|length }} 个 OpenAI 兼容中转站</p>
   </div>
-  <a class="button primary" href="/providers/new">新增中转站</a>
+  <div class="button-row">
+    {% if providers %}<button type="button" data-test-all>测试全部</button>{% endif %}
+    <a class="button primary" href="/providers/new">新增中转站</a>
+  </div>
 </section>
 
 {% if providers %}
@@ -38,7 +41,7 @@
         {% for provider in providers %}
           {% set latest = provider.tests[0] if provider.tests else None %}
           {% set default_model_id = default_model_ids.get(provider.id) %}
-          <tr>
+          <tr data-provider-row data-provider-id="{{ provider.id }}" data-provider-enabled="{{ 'true' if provider.enabled else 'false' }}">
             <td class="name-cell">
               <a class="strong-link" href="/providers/{{ provider.id }}" title="{{ provider.name }}">{{ provider.name }}</a>
             </td>
@@ -77,6 +80,7 @@
                         class="model-picker-option mono"
                         type="button"
                         data-model-option
+                        data-provider-id="{{ provider.id }}"
                         data-copy-value="{{ model.model_id }}"
                         title="点击复制 {{ model.model_id }}"
                       >{{ model.model_id }}</button>
@@ -87,11 +91,11 @@
                 <span class="muted">无</span>
               {% endif %}
             </td>
-            <td class="test-cell">
+            <td class="test-cell" data-test-result>
               {% if latest %}
                 <div class="test-line">
                   <span class="status {{ latest.status }}">{{ "成功" if latest.status == "success" else "失败" }}</span>
-                  <span class="test-summary muted small" title="{{ latest.model_id }}{% if latest.latency_ms %} · {{ latest.latency_ms }} ms{% endif %}">{{ latest.model_id }}{% if latest.latency_ms %} · {{ latest.latency_ms }} ms{% endif %}</span>
+                  <span class="test-summary muted small" title="{% if latest.status == 'failed' %}{{ latest.error_message }}{% else %}{{ latest.model_id }}{% if latest.latency_ms %} · {{ latest.latency_ms }} ms{% endif %}{% endif %}">{{ latest.model_id }}{% if latest.latency_ms %} · {{ latest.latency_ms }} ms{% endif %}</span>
                 </div>
               {% else %}
                 <span class="muted">未测试</span>
