@@ -24,7 +24,7 @@ CLIENT_PROFILE_LABELS = {
 VALID_CLIENT_PROFILES = frozenset(CLIENT_PROFILE_LABELS)
 
 CODEX_USER_AGENT = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
-CLAUDE_CODE_USER_AGENT = "claude-cli/2.1.114 (external, sdk-cli)"
+CLAUDE_CODE_USER_AGENT = "claude-cli/2.1.181 (external, sdk-cli)"
 CLAUDE_CODE_BETA = (
     "claude-code-20250219,interleaved-thinking-2025-05-14,"
     "context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01"

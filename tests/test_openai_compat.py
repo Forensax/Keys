@@ -51,7 +51,7 @@ async def test_fetch_models_parses_openai_data_array() -> None:
 async def test_fetch_models_uses_default_profile_headers() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer sk-test"
-        assert request.headers["user-agent"].startswith("claude-cli/2.1.114")
+        assert request.headers["user-agent"].startswith("claude-cli/2.1.181")
         assert request.headers["x-app"] == "cli"
         assert request.headers["anthropic-version"] == "2023-06-01"
         return httpx.Response(200, json={"data": []})
@@ -137,7 +137,7 @@ async def test_claude_code_profile_builds_messages_request() -> None:
         assert str(request.url) == "https://relay.example/v1/messages"
         assert request.headers["authorization"] == "Bearer sk-test"
         assert "x-api-key" not in request.headers
-        assert request.headers["user-agent"].startswith("claude-cli/2.1.114")
+        assert request.headers["user-agent"].startswith("claude-cli/2.1.181")
         assert request.headers["x-app"] == "cli"
         assert request.headers["anthropic-version"] == "2023-06-01"
         assert request.headers["anthropic-beta"] == CLAUDE_CODE_BETA
