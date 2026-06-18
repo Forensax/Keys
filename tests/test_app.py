@@ -564,7 +564,7 @@ def test_proxy_credentials_are_encrypted_and_proxy_page_masks_them() -> None:
     assert "有认证" in page.text
     assert "user@name" not in page.text
     assert "p:a/ss" not in page.text
-    assert "网络代理" in client.get("/").text
+    assert '>代理</a>' in client.get("/").text
 
 
 def test_provider_default_and_temporary_proxy_routes(monkeypatch) -> None:

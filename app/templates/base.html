@@ -11,13 +11,13 @@
       <a class="brand" href="/">{{ app_name }}</a>
       {% if authenticated %}
         <nav class="nav">
-          <a href="/">中转站</a>
+          <a href="/">首页</a>
           <a href="/providers/new">新增</a>
-          <a href="/proxies">网络代理</a>
+          <a href="/proxies">代理</a>
           <a href="/archive">归档</a>
-          <a href="/import-export">导入/导出</a>
+          <a href="/import-export">备份</a>
           <form method="post" action="/logout">
-            <button class="link-button" type="submit">退出登录</button>
+            <button class="link-button" type="submit">登出</button>
           </form>
         </nav>
       {% endif %}
