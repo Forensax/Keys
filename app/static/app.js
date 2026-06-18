@@ -246,18 +246,39 @@
     const providerId = preferenceForm.dataset.providerId;
     const status = preferenceForm.querySelector("[data-preference-save-status]");
     const modelInput = preferenceForm.querySelector('[name="model_id"]');
+    const modelFillRows = Array.from(document.querySelectorAll("[data-model-fill]"));
     let modelSaveTimer = null;
+    let preferenceSaveQueue = Promise.resolve();
+    let preferenceSaveSequence = 0;
 
-    async function savePreference(values) {
+    function syncSelectedModel(value) {
+      const selectedValue = value.trim();
+      modelFillRows.forEach((row) => {
+        const selected = row.dataset.modelValue === selectedValue;
+        row.classList.toggle("is-selected", selected);
+        row.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+    }
+
+    function savePreference(values) {
+      const sequence = ++preferenceSaveSequence;
       status.textContent = "保存中";
       status.classList.remove("error-text");
-      try {
-        await saveTestPreferences(providerId, values);
-        status.textContent = "测试配置已保存";
-      } catch (error) {
-        status.textContent = error.message || "测试配置保存失败";
-        status.classList.add("error-text");
-      }
+      const operation = preferenceSaveQueue
+        .catch(() => undefined)
+        .then(() => saveTestPreferences(providerId, values));
+      preferenceSaveQueue = operation;
+      operation.then(() => {
+        if (sequence === preferenceSaveSequence) {
+          status.textContent = "测试配置已保存";
+        }
+      }).catch((error) => {
+        if (sequence === preferenceSaveSequence) {
+          status.textContent = error.message || "测试配置保存失败";
+          status.classList.add("error-text");
+        }
+      });
+      return operation;
     }
 
     preferenceForm.querySelector('[name="client_profile"]').addEventListener("change", (event) => {
@@ -266,18 +287,29 @@
     preferenceForm.querySelector('[name="network_route"]').addEventListener("change", (event) => {
       savePreference({ network_route: event.target.value });
     });
+    modelFillRows.forEach((row) => {
+      row.addEventListener("click", () => {
+        modelInput.value = row.dataset.modelValue;
+        syncSelectedModel(modelInput.value);
+        modelInput.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    });
     modelInput.addEventListener("input", () => {
+      syncSelectedModel(modelInput.value);
       window.clearTimeout(modelSaveTimer);
       modelSaveTimer = window.setTimeout(() => savePreference({ model_id: modelInput.value }), 500);
     });
     modelInput.addEventListener("change", () => {
+      syncSelectedModel(modelInput.value);
       window.clearTimeout(modelSaveTimer);
       savePreference({ model_id: modelInput.value });
     });
     modelInput.addEventListener("blur", () => {
+      syncSelectedModel(modelInput.value);
       window.clearTimeout(modelSaveTimer);
       savePreference({ model_id: modelInput.value });
     });
+    syncSelectedModel(modelInput.value);
   }
 
   const testAllButton = document.querySelector("[data-test-all]");

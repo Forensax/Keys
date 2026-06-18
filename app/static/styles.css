@@ -302,6 +302,10 @@ button.small {
   overflow-x: auto;
 }
 
+.home-table-wrap {
+  overflow: visible;
+}
+
 table {
   border-collapse: collapse;
   table-layout: fixed;
@@ -777,6 +781,41 @@ tr:last-child td {
   border-bottom: 0;
 }
 
+.model-fill-row {
+  background: transparent;
+  border-left: 0;
+  border-radius: 0;
+  border-right: 0;
+  border-top: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  min-height: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.model-fill-row:hover {
+  background: #f4f7fb;
+}
+
+.model-fill-row.is-selected {
+  background: #eaf3ff;
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.model-fill-row:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.model-fill-row > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .preserve {
   white-space: pre-wrap;
 }
@@ -784,6 +823,20 @@ tr:last-child td {
 .form-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+@media (max-width: 1180px) {
+  .home-table-wrap {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .home-table-wrap .model-picker-menu {
+    margin-top: 4px;
+    min-width: 0;
+    position: static;
+    width: 100%;
+  }
 }
 
 @media (max-width: 820px) {

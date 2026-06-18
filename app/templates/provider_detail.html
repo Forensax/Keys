@@ -76,10 +76,24 @@
     {% if provider.models %}
       <div class="model-list">
         {% for model in provider.models %}
-          <div class="model-row">
-            <span class="mono">{{ model.model_id }}</span>
-            <span class="muted small">{{ model.owned_by }}</span>
-          </div>
+          {% if provider.archived_at %}
+            <div class="model-row">
+              <span class="mono">{{ model.model_id }}</span>
+              <span class="muted small">{{ model.owned_by }}</span>
+            </div>
+          {% else %}
+            <button
+              class="model-row model-fill-row{% if model.model_id == default_model_id %} is-selected{% endif %}"
+              type="button"
+              data-model-fill
+              data-model-value="{{ model.model_id }}"
+              aria-pressed="{{ 'true' if model.model_id == default_model_id else 'false' }}"
+              title="选择 {{ model.model_id }} 作为测试模型"
+            >
+              <span class="mono">{{ model.model_id }}</span>
+              <span class="muted small">{{ model.owned_by }}</span>
+            </button>
+          {% endif %}
         {% endfor %}
       </div>
     {% else %}

@@ -357,6 +357,39 @@ def test_detail_allows_manual_model_and_temporary_profile(monkeypatch) -> None:
         assert test is not None and test.client_profile == CLIENT_PROFILE_CLAUDE_CODE
 
 
+def test_detail_model_rows_fill_test_model_and_archive_stays_read_only() -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        provider.test_model_id = "model-b"
+        db.add_all(
+            [
+                ProviderModel(provider_id=provider_id, model_id="model-a", owned_by="test", raw_json="{}"),
+                ProviderModel(provider_id=provider_id, model_id="model-b", owned_by="test", raw_json="{}"),
+            ]
+        )
+        db.commit()
+
+    detail = client.get(f"/providers/{provider_id}")
+
+    assert detail.status_code == 200
+    assert detail.text.count("data-model-fill") == 2
+    assert 'data-model-value="model-a"' in detail.text
+    assert 'data-model-value="model-b"' in detail.text
+    assert 'data-model-value="model-b" aria-pressed="true"' in " ".join(detail.text.split())
+    assert "选择 model-b 作为测试模型" in detail.text
+
+    client.post(f"/providers/{provider_id}/archive")
+    archived_detail = client.get(f"/providers/{provider_id}")
+
+    assert archived_detail.status_code == 200
+    assert "data-model-fill" not in archived_detail.text
+    assert archived_detail.text.count('class="model-row"') == 2
+
+
 def test_detail_response_column_uses_success_response_and_failure_error() -> None:
     reset_db()
     client = TestClient(app)
@@ -927,6 +960,7 @@ def test_index_exposes_test_all_and_eligible_provider_rows() -> None:
 
     assert "data-test-all" in page
     assert ">测试全部</button>" in page
+    assert 'class="table-wrap home-table-wrap"' in page
     assert f'data-provider-id="{enabled_id}" data-provider-enabled="true"' in page
     assert f'data-provider-id="{disabled_id}" data-provider-enabled="false"' in page
     assert page.count("data-test-result") == 2
