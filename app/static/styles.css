@@ -299,7 +299,7 @@ button.small {
   border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: var(--shadow);
-  overflow: visible;
+  overflow-x: auto;
 }
 
 table {
@@ -428,6 +428,69 @@ tr:last-child td {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   z-index: 100;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.strong {
+  font-weight: 700;
+}
+
+.proxy-table {
+  min-width: 1100px;
+}
+
+.proxy-col-name {
+  width: 130px;
+}
+
+.proxy-col-endpoint {
+  width: 250px;
+}
+
+.proxy-col-auth,
+.proxy-col-status {
+  width: 75px;
+}
+
+.proxy-col-ip {
+  width: 140px;
+}
+
+.proxy-col-test {
+  width: 175px;
+}
+
+.proxy-col-actions {
+  width: 255px;
+}
+
+.proxy-actions {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.proxy-actions .small {
+  box-sizing: border-box;
+  height: 30px;
+  min-height: 30px;
+}
+
+.proxy-url-import {
+  margin-bottom: 16px;
+}
+
+.inline-input-action {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: 6px;
+}
+
+.error-text {
+  color: var(--danger);
 }
 
 .name-cell,

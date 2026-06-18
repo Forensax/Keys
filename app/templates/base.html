@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v=20260618-6">
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v=20260618-8">
   </head>
   <body>
     <header class="topbar">
@@ -13,6 +13,7 @@
         <nav class="nav">
           <a href="/">中转站</a>
           <a href="/providers/new">新增</a>
+          <a href="/proxies">网络代理</a>
           <a href="/archive">归档</a>
           <a href="/import-export">导入/导出</a>
           <form method="post" action="/logout">
@@ -30,6 +31,6 @@
     </main>
     <div class="copy-toast" data-copy-toast aria-live="polite"></div>
     <div class="response-tooltip" data-response-tooltip-popup role="tooltip" hidden></div>
-    <script src="{{ url_for('static', path='/app.js') }}?v=20260618-6"></script>
+    <script src="{{ url_for('static', path='/app.js') }}?v=20260618-8"></script>
   </body>
 </html>

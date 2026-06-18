@@ -33,6 +33,7 @@ class Settings:
     session_secret: str = os.getenv("SESSION_SECRET", secrets.token_urlsafe(32))
     cookie_secure: bool = os.getenv("COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
+    proxy_test_url: str = os.getenv("PROXY_TEST_URL", "https://api.ipify.org?format=json")
 
 
 settings = Settings()

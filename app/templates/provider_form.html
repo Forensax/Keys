@@ -50,6 +50,17 @@
     </select>
   </label>
 
+  <label>
+    默认网络代理
+    {% set selected_proxy_id = values.default_proxy_id if values and values.default_proxy_id is defined else provider.default_proxy_id if provider else '' %}
+    <select name="default_proxy_id">
+      <option value="" {% if not selected_proxy_id %}selected{% endif %}>直连</option>
+      {% for proxy in proxies %}
+        <option value="{{ proxy.id }}" {% if selected_proxy_id|string == proxy.id|string %}selected{% endif %} {% if not proxy.enabled and selected_proxy_id|string != proxy.id|string %}disabled{% endif %}>{{ proxy.name }}{% if not proxy.enabled %}（已禁用）{% endif %}</option>
+      {% endfor %}
+    </select>
+  </label>
+
   <label class="checkbox-row">
     {% set enabled_checked = values.enabled if values else (provider.enabled if provider else true) %}
     <input type="checkbox" name="enabled" {% if enabled_checked %}checked{% endif %}>

@@ -6,7 +6,7 @@
 <section class="section-head">
   <div>
     <h1>导入/导出</h1>
-    <p class="muted">用于迁移中转站配置，或保留 JSON 备份。</p>
+    <p class="muted">用于迁移中转站和网络代理配置，或保留 JSON 备份。</p>
   </div>
 </section>
 
@@ -16,11 +16,11 @@
     <form class="stack" method="post" action="/export">
       <label class="checkbox-row">
         <input type="checkbox" name="include_secrets">
-        包含明文 API Key
+        包含明文 API Key 和代理认证信息
       </label>
       <label>
         密码确认
-        <input type="password" name="password" autocomplete="current-password" placeholder="仅导出 API Key 时需要填写">
+        <input type="password" name="password" autocomplete="current-password" placeholder="导出密钥和代理凭据时需要填写">
       </label>
       <button class="primary" type="submit">导出</button>
     </form>
@@ -35,7 +35,7 @@
       </label>
       <button class="primary" type="submit">导入</button>
     </form>
-    <p class="muted small">新增中转站时导入文件必须包含 `api_key`；更新已有中转站时可以不提供。</p>
+    <p class="muted small">新增中转站时导入文件必须包含 `api_key`；包含代理认证信息的备份可以完整恢复代理用户名和密码。</p>
   </div>
 </section>
 {% endblock %}

@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+from cryptography.fernet import Fernet
+
+from app.models import NetworkProxy
+from app.proxy_support import build_proxy_url, sanitize_proxy_error, validate_proxy_fields
+from app.security import encrypt_secret_with_fernet
+
+
+def test_proxy_url_encodes_credentials_and_ipv6_host() -> None:
+    fernet = Fernet(Fernet.generate_key())
+    proxy = NetworkProxy(
+        name="IPv6 Proxy",
+        scheme="socks5h",
+        host="2001:db8::10",
+        port=1080,
+        encrypted_username=encrypt_secret_with_fernet("user@example", fernet),
+        encrypted_password=encrypt_secret_with_fernet("p:a/ss word", fernet),
+    )
+
+    url = build_proxy_url(proxy, fernet)
+
+    assert url == "socks5h://user%40example:p%3Aa%2Fss%20word@[2001:db8::10]:1080"
+    assert "user@example" not in proxy.encrypted_username
+    assert "p:a/ss word" not in proxy.encrypted_password
+
+
+def test_proxy_field_validation_rejects_invalid_values() -> None:
+    assert validate_proxy_fields("", "ftp", "https://proxy.example/path", "70000") == [
+        "名称必填。",
+        "代理协议无效。",
+        "主机只能填写域名或 IP 地址，不能包含协议、路径或空格。",
+        "端口必须是 1 到 65535 之间的整数。",
+    ]
+
+
+def test_proxy_error_sanitizer_removes_credentials() -> None:
+    error = RuntimeError("failed via socks5://user:secret@proxy.example:1080")
+
+    sanitized = sanitize_proxy_error(error)
+
+    assert "user" not in sanitized
+    assert "secret" not in sanitized
+    assert "socks5://***@proxy.example:1080" in sanitized

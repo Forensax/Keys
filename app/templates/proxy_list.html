@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}网络代理 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="section-head">
+  <div><h1>网络代理</h1><p class="muted">共 {{ proxies|length }} 个代理，用于模型刷新和连通性测试。</p></div>
+  <a class="button primary" href="/proxies/new">新增代理</a>
+</section>
+
+{% if proxies %}
+<div class="table-wrap">
+  <table class="proxy-table">
+    <colgroup>
+      <col class="proxy-col-name">
+      <col class="proxy-col-endpoint">
+      <col class="proxy-col-auth">
+      <col class="proxy-col-status">
+      <col class="proxy-col-ip">
+      <col class="proxy-col-test">
+      <col class="proxy-col-actions">
+    </colgroup>
+    <thead><tr><th>名称</th><th>代理地址</th><th>认证</th><th>状态</th><th>出口 IP</th><th>最近测试</th><th></th></tr></thead>
+    <tbody>
+      {% for proxy in proxies %}
+      <tr>
+        <td class="nowrap strong">{{ proxy.name }}</td>
+        <td class="mono nowrap">{{ proxy.endpoint }}</td>
+        <td>{{ "有认证" if proxy.has_auth else "无认证" }}</td>
+        <td><span class="status {{ 'success' if proxy.enabled else 'disabled' }}">{{ "启用" if proxy.enabled else "禁用" }}</span></td>
+        <td class="mono nowrap">{{ proxy.last_exit_ip or "—" }}</td>
+        <td>
+          {% if proxy.last_test_status %}
+            <span class="status {{ proxy.last_test_status }}">{{ "成功" if proxy.last_test_status == "success" else "失败" }}</span>
+            <span class="muted small">{% if proxy.last_latency_ms is not none %}{{ proxy.last_latency_ms }} ms{% endif %}</span>
+            {% if proxy.last_error %}<span class="response-preview" data-response-tooltip="{{ proxy.last_error }}" tabindex="0">{{ proxy.last_error }}</span>{% endif %}
+          {% else %}<span class="muted">未测试</span>{% endif %}
+        </td>
+        <td class="action-cell">
+          <div class="actions proxy-actions">
+            <form method="post" action="/proxies/{{ proxy.id }}/test"><button class="small primary" type="submit">测试</button></form>
+            <a class="button small" href="/proxies/{{ proxy.id }}/edit">编辑</a>
+            <form method="post" action="/proxies/{{ proxy.id }}/toggle"><button class="small" type="submit">{{ "禁用" if proxy.enabled else "启用" }}</button></form>
+            <form method="post" action="/proxies/{{ proxy.id }}/delete" onsubmit="return confirm('确定删除这个网络代理吗？');"><button class="small danger" type="submit">删除</button></form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty panel"><h2>还没有网络代理</h2><p class="muted">新增代理后，可将它设为中转站默认网络路径。</p><a class="button primary" href="/proxies/new">新增代理</a></div>
+{% endif %}
+{% endblock %}

@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .proxy_support import sanitize_proxy_error
 
 
 CLIENT_PROFILE_OPENAI_CHAT = "openai_chat"
@@ -148,9 +149,15 @@ async def fetch_models(
     api_key: str,
     client_profile: str = CLIENT_PROFILE_OPENAI_CHAT,
     transport: httpx.AsyncBaseTransport | None = None,
+    proxy_url: str | None = None,
 ) -> list[ModelInfo]:
     url = build_url(base_url, "/models")
-    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds, transport=transport) as client:
+    async with httpx.AsyncClient(
+        timeout=settings.request_timeout_seconds,
+        transport=transport,
+        proxy=proxy_url,
+        trust_env=False,
+    ) as client:
         response = await client.get(url, headers=auth_headers(api_key, client_profile))
         response.raise_for_status()
         payload = response.json()
@@ -177,6 +184,7 @@ async def run_connectivity_test(
     model_id: str,
     client_profile: str = CLIENT_PROFILE_OPENAI_CHAT,
     transport: httpx.AsyncBaseTransport | None = None,
+    proxy_url: str | None = None,
 ) -> ConnectivityTestResult:
     path, payload = build_connectivity_request(client_profile, model_id)
     url = build_url(base_url, path)
@@ -186,7 +194,12 @@ async def run_connectivity_test(
 
     started = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds, transport=transport) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.request_timeout_seconds,
+            transport=transport,
+            proxy=proxy_url,
+            trust_env=False,
+        ) as client:
             response = await client.post(url, headers=headers, json=payload)
         latency_ms = int((time.perf_counter() - started) * 1000)
         excerpt = response_excerpt(response)
@@ -202,10 +215,12 @@ async def run_connectivity_test(
         return ConnectivityTestResult("failed", latency_ms, error_message, excerpt)
     except httpx.TimeoutException as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
-        return ConnectivityTestResult("failed", latency_ms, f"请求超时：{exc}", "")
+        detail = sanitize_proxy_error(exc) if proxy_url else str(exc)
+        return ConnectivityTestResult("failed", latency_ms, f"请求超时：{detail}", "")
     except httpx.RequestError as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
-        return ConnectivityTestResult("failed", latency_ms, f"请求错误：{exc}", "")
+        detail = sanitize_proxy_error(exc) if proxy_url else str(exc)
+        return ConnectivityTestResult("failed", latency_ms, f"请求错误：{detail}", "")
 
 
 async def run_chat_completion_test(

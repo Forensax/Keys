@@ -236,3 +236,62 @@ async def test_codex_go_client_rejection_explains_new_api_passthrough() -> None:
     assert result.status == "failed"
     assert "中间层未透传 Codex User-Agent" in result.error_message
     assert "new-api" in result.error_message
+
+
+@pytest.mark.asyncio
+async def test_requests_pass_explicit_proxy_and_disable_environment_proxy(monkeypatch) -> None:
+    client_options: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            client_options.append(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get(self, url, **kwargs):
+            request = httpx.Request("GET", url)
+            return httpx.Response(200, json={"data": []}, request=request)
+
+        async def post(self, url, **kwargs):
+            request = httpx.Request("POST", url)
+            return httpx.Response(200, json={"ok": True}, request=request)
+
+    monkeypatch.setattr("app.openai_compat.httpx.AsyncClient", FakeAsyncClient)
+    proxy_url = "socks5h://user:password@proxy.example:1080"
+
+    await fetch_models("https://relay.example/v1", "sk-test", proxy_url=proxy_url)
+    await run_connectivity_test("https://relay.example/v1", "sk-test", "gpt-test", proxy_url=proxy_url)
+
+    assert len(client_options) == 2
+    assert all(options["proxy"] == proxy_url for options in client_options)
+    assert all(options["trust_env"] is False for options in client_options)
+
+
+@pytest.mark.asyncio
+async def test_direct_requests_explicitly_disable_environment_proxy(monkeypatch) -> None:
+    captured: dict = {}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get(self, url, **kwargs):
+            request = httpx.Request("GET", url)
+            return httpx.Response(200, json={"data": []}, request=request)
+
+    monkeypatch.setattr("app.openai_compat.httpx.AsyncClient", FakeAsyncClient)
+
+    await fetch_models("https://relay.example/v1", "sk-test")
+
+    assert captured["proxy"] is None
+    assert captured["trust_env"] is False

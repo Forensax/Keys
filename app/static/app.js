@@ -159,4 +159,34 @@
   window.addEventListener("resize", positionResponseTooltip);
   window.addEventListener("scroll", positionResponseTooltip, true);
 
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-proxy-url-parse]");
+    if (!button) {
+      return;
+    }
+    const input = document.querySelector("[data-proxy-url-input]");
+    const form = document.querySelector("[data-proxy-form]");
+    const message = document.querySelector("[data-proxy-url-message]");
+    try {
+      const parsed = new URL(input.value.trim());
+      const scheme = parsed.protocol.replace(":", "").toLowerCase();
+      if (!["http", "https", "socks5", "socks5h"].includes(scheme)) {
+        throw new Error("仅支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H");
+      }
+      if (!parsed.hostname || !parsed.port) {
+        throw new Error("代理 URL 必须包含主机和端口");
+      }
+      form.querySelector("[data-proxy-scheme]").value = scheme;
+      form.querySelector("[data-proxy-host]").value = parsed.hostname;
+      form.querySelector("[data-proxy-port]").value = parsed.port;
+      form.querySelector("[data-proxy-username]").value = decodeURIComponent(parsed.username);
+      form.querySelector("[data-proxy-password]").value = decodeURIComponent(parsed.password);
+      message.textContent = "代理 URL 已解析，请确认字段后保存。";
+      message.classList.remove("error-text");
+    } catch (error) {
+      message.textContent = error.message || "代理 URL 无效";
+      message.classList.add("error-text");
+    }
+  });
+
 })();

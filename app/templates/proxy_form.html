@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "新增代理" if mode == "new" else "编辑代理" }} · {{ app_name }}{% endblock %}
+
+{% block content %}
+{% set values = form if form is defined else {} %}
+<section class="section-head">
+  <div><h1>{{ "新增代理" if mode == "new" else "编辑代理" }}</h1><p class="muted">认证信息会使用应用密码加密保存。</p></div>
+  <a class="button" href="/proxies">取消</a>
+</section>
+{% if errors %}<div class="form-error">{% for error in errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
+
+<section class="panel proxy-url-import">
+  <label>粘贴完整代理 URL
+    <div class="inline-input-action">
+      <input type="text" data-proxy-url-input placeholder="socks5h://user:password@proxy.example.com:1080" autocomplete="off">
+      <button type="button" data-proxy-url-parse>解析</button>
+    </div>
+  </label>
+  <p class="muted small" data-proxy-url-message>解析只在当前浏览器中进行，URL 本身不会提交。</p>
+</section>
+
+<form class="panel form-grid" method="post" action="{{ '/proxies' if mode == 'new' else '/proxies/' ~ proxy.id }}" data-proxy-form>
+  <label>名称<input name="name" value="{{ values.name if values else proxy.name if proxy else '' }}" maxlength="160" required></label>
+  <label>协议
+    {% set selected_scheme = values.scheme if values else proxy.scheme if proxy else 'http' %}
+    <select name="scheme" data-proxy-scheme required>{% for scheme in proxy_schemes %}<option value="{{ scheme }}" {% if scheme == selected_scheme %}selected{% endif %}>{{ scheme|upper }}</option>{% endfor %}</select>
+  </label>
+  <label>主机<input name="host" data-proxy-host value="{{ values.host if values else proxy.host if proxy else '' }}" placeholder="proxy.example.com" required></label>
+  <label>端口<input name="port" data-proxy-port type="number" min="1" max="65535" value="{{ values.port if values else proxy.port if proxy else '' }}" required></label>
+  <label>用户名<input name="username" data-proxy-username autocomplete="off" placeholder="{{ '留空则保留现有用户名' if proxy else '可选' }}"></label>
+  <label>密码<input name="password" data-proxy-password type="password" autocomplete="new-password" placeholder="{{ '留空则保留现有密码' if proxy else '可选' }}"></label>
+  {% if proxy %}<label class="checkbox-row"><input type="checkbox" name="clear_auth"> 清除已保存的代理认证</label>{% endif %}
+  <label class="checkbox-row">
+    {% set enabled_checked = values.enabled if values else (proxy.enabled if proxy else true) %}
+    <input type="checkbox" name="enabled" {% if enabled_checked %}checked{% endif %}> 启用
+  </label>
+  <label class="wide">备注<textarea name="notes" rows="4">{{ values.notes if values else proxy.notes if proxy else '' }}</textarea></label>
+  <div class="form-actions wide"><button class="primary" type="submit">{{ "创建代理" if mode == "new" else "保存修改" }}</button></div>
+</form>
+{% endblock %}

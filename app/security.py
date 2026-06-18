@@ -108,6 +108,21 @@ def decrypt_api_key_with_fernet(encrypted_api_key: str, fernet: Fernet) -> str:
         raise ValueError("无法解密 API Key，请使用当前密码重新登录。") from exc
 
 
+def encrypt_secret_with_fernet(value: str, fernet: Fernet) -> str:
+    if not value:
+        return ""
+    return fernet.encrypt(value.encode("utf-8")).decode("ascii")
+
+
+def decrypt_secret_with_fernet(value: str, fernet: Fernet) -> str:
+    if not value:
+        return ""
+    try:
+        return fernet.decrypt(value.encode("ascii")).decode("utf-8")
+    except InvalidToken as exc:
+        raise ValueError("无法解密代理认证信息，请使用当前密码重新登录。") from exc
+
+
 def make_password_proof(password: str, salt: str) -> str:
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), _decode_salt(salt), 120_000, dklen=32)
     return base64.urlsafe_b64encode(digest).decode("ascii")

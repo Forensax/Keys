@@ -12,14 +12,16 @@ from app.db import (  # noqa: E402
     engine,
     ensure_client_profile_columns,
     ensure_provider_archive_column,
+    ensure_proxy_columns,
 )
 from app.main import app  # noqa: E402
-from app.models import ConnectivityTest, Provider, ProviderModel  # noqa: E402
+from app.models import ConnectivityTest, NetworkProxy, Provider, ProviderModel  # noqa: E402
 from app.openai_compat import (  # noqa: E402
     CLIENT_PROFILE_CLAUDE_CODE,
     CLIENT_PROFILE_CODEX,
     ConnectivityTestResult,
 )
+from app.proxy_support import ProxyTestResult  # noqa: E402
 
 
 def reset_db() -> None:
@@ -44,6 +46,26 @@ def setup_and_create_provider(client: TestClient, name: str = "Relay") -> int:
         follow_redirects=False,
     )
     return int(create.headers["location"].rsplit("/", 1)[-1])
+
+
+def create_proxy(client: TestClient, name: str = "Local Proxy", enabled: bool = True) -> int:
+    data = {
+        "name": name,
+        "scheme": "socks5h",
+        "host": "proxy.example",
+        "port": "1080",
+        "username": "user@name",
+        "password": "p:a/ss",
+        "notes": "test proxy",
+    }
+    if enabled:
+        data["enabled"] = "on"
+    response = client.post("/proxies", data=data, follow_redirects=False)
+    assert response.status_code == 303
+    with SessionLocal() as db:
+        proxy = db.scalar(select(NetworkProxy).where(NetworkProxy.name == name))
+        assert proxy is not None
+        return proxy.id
 
 
 def test_setup_login_and_provider_crud() -> None:
@@ -254,14 +276,40 @@ def test_client_profile_columns_are_added_to_existing_sqlite_tables(tmp_path) ->
     old_engine.dispose()
 
 
+def test_proxy_columns_are_added_to_existing_sqlite_tables(tmp_path) -> None:
+    old_engine = create_engine(f"sqlite:///{tmp_path / 'old-proxy-columns.db'}")
+    with old_engine.begin() as connection:
+        connection.execute(text("CREATE TABLE providers (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL)"))
+        connection.execute(text("CREATE TABLE connectivity_tests (id INTEGER PRIMARY KEY, model_id VARCHAR NOT NULL)"))
+        connection.execute(text("INSERT INTO providers (name) VALUES ('Legacy')"))
+        connection.execute(text("INSERT INTO connectivity_tests (model_id) VALUES ('legacy-model')"))
+
+    ensure_proxy_columns(old_engine)
+
+    assert "default_proxy_id" in {column["name"] for column in inspect(old_engine).get_columns("providers")}
+    assert "network_route" in {
+        column["name"] for column in inspect(old_engine).get_columns("connectivity_tests")
+    }
+    with old_engine.connect() as connection:
+        assert connection.execute(text("SELECT default_proxy_id FROM providers")).scalar_one() is None
+        assert connection.execute(text("SELECT network_route FROM connectivity_tests")).scalar_one() == "直连"
+    old_engine.dispose()
+
+
 def test_detail_allows_manual_model_and_temporary_profile(monkeypatch) -> None:
     reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, str | None]] = []
 
-    async def fake_test(base_url: str, api_key: str, model_id: str, client_profile: str):
-        calls.append((model_id, client_profile))
+    async def fake_test(
+        base_url: str,
+        api_key: str,
+        model_id: str,
+        client_profile: str,
+        proxy_url: str | None = None,
+    ):
+        calls.append((model_id, client_profile, proxy_url))
         return ConnectivityTestResult("success", 12, "", '{"ok":true}')
 
     monkeypatch.setattr(main_module, "run_connectivity_test", fake_test)
@@ -277,7 +325,7 @@ def test_detail_allows_manual_model_and_temporary_profile(monkeypatch) -> None:
     )
 
     assert tested.status_code == 303
-    assert calls == [("manual-model", CLIENT_PROFILE_CLAUDE_CODE)]
+    assert calls == [("manual-model", CLIENT_PROFILE_CLAUDE_CODE, None)]
     with SessionLocal() as db:
         provider = db.get(Provider, provider_id)
         test = db.scalar(select(ConnectivityTest).where(ConnectivityTest.provider_id == provider_id))
@@ -495,3 +543,213 @@ def test_import_rejects_invalid_client_profile_without_stopping_other_rows() -> 
         assert db.scalar(select(Provider).where(Provider.name == "Invalid Relay")) is None
         valid = db.scalar(select(Provider).where(Provider.name == "Valid Relay"))
         assert valid is not None and valid.client_profile == CLIENT_PROFILE_CLAUDE_CODE
+
+
+def test_proxy_credentials_are_encrypted_and_proxy_page_masks_them() -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    proxy_id = create_proxy(client)
+
+    with SessionLocal() as db:
+        proxy = db.get(NetworkProxy, proxy_id)
+        assert proxy is not None
+        assert "user@name" not in proxy.encrypted_username
+        assert "p:a/ss" not in proxy.encrypted_password
+        assert proxy.has_auth is True
+
+    page = client.get("/proxies")
+    assert page.status_code == 200
+    assert "socks5h://proxy.example:1080" in page.text
+    assert "有认证" in page.text
+    assert "user@name" not in page.text
+    assert "p:a/ss" not in page.text
+    assert "网络代理" in client.get("/").text
+
+
+def test_provider_default_and_temporary_proxy_routes(monkeypatch) -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    proxy_id = create_proxy(client)
+    create = client.post(
+        "/providers",
+        data={
+            "name": "Proxy Relay",
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-test-secret",
+            "enabled": "on",
+            "default_proxy_id": str(proxy_id),
+        },
+        follow_redirects=False,
+    )
+    provider_id = int(create.headers["location"].rsplit("/", 1)[-1])
+    calls: list[str | None] = []
+
+    async def fake_test(*args, proxy_url: str | None = None, **kwargs):
+        calls.append(proxy_url)
+        return ConnectivityTestResult("success", 9, "", '{"ok":true}')
+
+    monkeypatch.setattr(main_module, "run_connectivity_test", fake_test)
+    client.post(f"/providers/{provider_id}/test", data={"model_id": "model-default"})
+    client.post(
+        f"/providers/{provider_id}/test",
+        data={"model_id": "model-direct", "network_route": "direct"},
+    )
+
+    assert calls[0] == "socks5h://user%40name:p%3Aa%2Fss@proxy.example:1080"
+    assert calls[1] is None
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        routes = list(
+            db.scalars(
+                select(ConnectivityTest.network_route)
+                .where(ConnectivityTest.provider_id == provider_id)
+                .order_by(ConnectivityTest.id)
+            ).all()
+        )
+        assert provider is not None and provider.default_proxy_id == proxy_id
+        assert routes == ["Local Proxy", "直连"]
+
+
+def test_disabled_default_proxy_rejects_requests_without_direct_fallback(monkeypatch) -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    proxy_id = create_proxy(client)
+    create = client.post(
+        "/providers",
+        data={
+            "name": "Proxy Relay",
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-test-secret",
+            "enabled": "on",
+            "default_proxy_id": str(proxy_id),
+        },
+        follow_redirects=False,
+    )
+    provider_id = int(create.headers["location"].rsplit("/", 1)[-1])
+    client.post(f"/proxies/{proxy_id}/toggle")
+    called = False
+
+    async def should_not_call(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("不应发起外部请求")
+
+    monkeypatch.setattr(main_module, "fetch_models", should_not_call)
+    monkeypatch.setattr(main_module, "run_connectivity_test", should_not_call)
+    refresh = client.post(f"/providers/{provider_id}/refresh-models", follow_redirects=True)
+    tested = client.post(
+        f"/providers/{provider_id}/test",
+        data={"model_id": "model-test"},
+        follow_redirects=True,
+    )
+
+    assert called is False
+    assert "已禁用" in refresh.text
+    assert "已禁用" in tested.text
+    with SessionLocal() as db:
+        assert db.scalar(select(ConnectivityTest).where(ConnectivityTest.provider_id == provider_id)) is None
+
+
+def test_referenced_proxy_cannot_be_deleted() -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    proxy_id = create_proxy(client)
+    client.post(
+        "/providers",
+        data={
+            "name": "Proxy Relay",
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-test-secret",
+            "enabled": "on",
+            "default_proxy_id": str(proxy_id),
+        },
+    )
+
+    response = client.post(f"/proxies/{proxy_id}/delete", follow_redirects=True)
+
+    assert "仍有 1 个中转站使用该默认代理" in response.text
+    with SessionLocal() as db:
+        assert db.get(NetworkProxy, proxy_id) is not None
+
+
+def test_proxy_self_test_persists_latest_result(monkeypatch) -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    proxy_id = create_proxy(client)
+
+    async def fake_proxy_test(proxy_url: str):
+        assert proxy_url.startswith("socks5h://user%40name:")
+        return ProxyTestResult("success", "203.0.113.10", 23, "")
+
+    monkeypatch.setattr(main_module, "test_proxy_connection", fake_proxy_test)
+    response = client.post(f"/proxies/{proxy_id}/test", follow_redirects=True)
+
+    assert "出口 IP：203.0.113.10" in response.text
+    with SessionLocal() as db:
+        proxy = db.get(NetworkProxy, proxy_id)
+        assert proxy is not None
+        assert proxy.last_test_status == "success"
+        assert proxy.last_exit_ip == "203.0.113.10"
+        assert proxy.last_latency_ms == 23
+        assert proxy.last_tested_at is not None
+
+
+def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    proxy_id = create_proxy(client)
+    client.post(
+        "/providers",
+        data={
+            "name": "Proxy Relay",
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-test-secret",
+            "enabled": "on",
+            "default_proxy_id": str(proxy_id),
+        },
+    )
+
+    public_export = client.post("/export", data={"password": ""}).json()
+    assert public_export["version"] == 2
+    assert public_export["proxies"][0]["has_auth"] is True
+    assert "username" not in public_export["proxies"][0]
+    assert "password" not in public_export["proxies"][0]
+    assert public_export["providers"][0]["default_proxy"] == "Local Proxy"
+
+    secret_response = client.post(
+        "/export",
+        data={"include_secrets": "on", "password": "long-test-password"},
+    )
+    secret_export = secret_response.json()
+    assert secret_export["proxies"][0]["username"] == "user@name"
+    assert secret_export["proxies"][0]["password"] == "p:a/ss"
+    assert secret_export["providers"][0]["api_key"] == "sk-test-secret"
+
+    reset_db()
+    import_client = TestClient(app)
+    import_client.post(
+        "/setup",
+        data={"password": "long-test-password", "confirm_password": "long-test-password"},
+    )
+    imported = import_client.post(
+        "/import",
+        files={"file": ("backup.json", json.dumps(secret_export).encode("utf-8"), "application/json")},
+        follow_redirects=False,
+    )
+    assert imported.status_code == 303
+    restored_export = import_client.post(
+        "/export",
+        data={"include_secrets": "on", "password": "long-test-password"},
+    ).json()
+    assert restored_export["proxies"][0]["username"] == "user@name"
+    assert restored_export["proxies"][0]["password"] == "p:a/ss"
+    with SessionLocal() as db:
+        provider = db.scalar(select(Provider).where(Provider.name == "Proxy Relay"))
+        assert provider is not None and provider.default_proxy is not None
+        assert provider.default_proxy.name == "Local Proxy"

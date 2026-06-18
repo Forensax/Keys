@@ -61,12 +61,33 @@ def ensure_client_profile_columns(bind: Engine = engine) -> None:
             connection.execute(text(statement))
 
 
+def ensure_proxy_columns(bind: Engine = engine) -> None:
+    inspector = inspect(bind)
+    tables = set(inspector.get_table_names())
+    migrations = {
+        "providers": "ALTER TABLE providers ADD COLUMN default_proxy_id INTEGER",
+        "connectivity_tests": (
+            "ALTER TABLE connectivity_tests ADD COLUMN network_route VARCHAR(160) NOT NULL DEFAULT '直连'"
+        ),
+    }
+    for table_name, statement in migrations.items():
+        if table_name not in tables:
+            continue
+        column_name = "default_proxy_id" if table_name == "providers" else "network_route"
+        columns = {column["name"] for column in inspect(bind).get_columns(table_name)}
+        if column_name in columns:
+            continue
+        with bind.begin() as connection:
+            connection.execute(text(statement))
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     ensure_provider_archive_column()
     ensure_client_profile_columns()
+    ensure_proxy_columns()
 
 
 def get_db() -> Generator[Session, None, None]:

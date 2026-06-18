@@ -20,6 +20,36 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
+class NetworkProxy(Base):
+    __tablename__ = "network_proxies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False, unique=True, index=True)
+    scheme: Mapped[str] = mapped_column(String(16), nullable=False)
+    host: Mapped[str] = mapped_column(String(500), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    encrypted_username: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    encrypted_password: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_test_status: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    last_exit_ip: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    last_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    @property
+    def endpoint(self) -> str:
+        host = f"[{self.host}]" if ":" in self.host and not self.host.startswith("[") else self.host
+        return f"{self.scheme}://{host}:{self.port}"
+
+    @property
+    def has_auth(self) -> bool:
+        return bool(self.encrypted_username or self.encrypted_password)
+
+
 class Provider(Base):
     __tablename__ = "providers"
     __table_args__ = (UniqueConstraint("name", "base_url", name="uq_provider_name_base_url"),)
@@ -32,6 +62,9 @@ class Provider(Base):
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     client_profile: Mapped[str] = mapped_column(String(32), nullable=False, default="openai_chat")
+    default_proxy_id: Mapped[int | None] = mapped_column(
+        ForeignKey("network_proxies.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
@@ -42,6 +75,7 @@ class Provider(Base):
     tests: Mapped[list["ConnectivityTest"]] = relationship(
         back_populates="provider", cascade="all, delete-orphan", order_by="desc(ConnectivityTest.tested_at)"
     )
+    default_proxy: Mapped[NetworkProxy | None] = relationship(foreign_keys=[default_proxy_id])
 
 
 class ProviderModel(Base):
@@ -69,6 +103,7 @@ class ConnectivityTest(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     raw_response_excerpt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    network_route: Mapped[str] = mapped_column(String(160), nullable=False, default="直连")
     tested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
     provider: Mapped[Provider] = relationship(back_populates="tests")

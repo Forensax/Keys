@@ -8,6 +8,7 @@
     <h1>{{ provider.name }}</h1>
     <p class="muted mono">{{ provider.base_url }}</p>
     <p class="muted">默认客户端模式：<strong>{{ client_profile_labels.get(provider.client_profile, provider.client_profile) }}</strong></p>
+    <p class="muted">默认网络：<strong>{{ provider.default_proxy.name if provider.default_proxy else "直连" }}</strong></p>
   </div>
   <div class="button-row">
     {% if provider.archived_at %}
@@ -115,6 +116,16 @@
             {% endfor %}
           </datalist>
         </label>
+        <label>
+          网络路径
+          <select name="network_route" required>
+            <option value="default">使用默认（{{ provider.default_proxy.name if provider.default_proxy else "直连" }}）</option>
+            <option value="direct">直连</option>
+            {% for proxy in proxies %}
+              <option value="proxy:{{ proxy.id }}">{{ proxy.name }} · {{ proxy.endpoint }}</option>
+            {% endfor %}
+          </select>
+        </label>
         <button class="primary" type="submit">运行连通性测试</button>
       </form>
       {% if not provider.models %}
@@ -134,6 +145,7 @@
             <th>时间</th>
             <th>模型</th>
             <th>客户端模式</th>
+            <th>网络</th>
             <th>状态</th>
             <th>延迟</th>
             <th>响应</th>
@@ -145,6 +157,7 @@
               <td>{{ test.tested_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
               <td class="mono">{{ test.model_id }}</td>
               <td>{{ client_profile_labels.get(test.client_profile, test.client_profile) }}</td>
+              <td>{{ test.network_route }}</td>
               <td><span class="status {{ test.status }}">{{ "成功" if test.status == "success" else "失败" }}</span></td>
               <td>{{ test.latency_ms if test.latency_ms is not none else "" }}{% if test.latency_ms is not none %} ms{% endif %}</td>
               {% if test.status == "success" %}
