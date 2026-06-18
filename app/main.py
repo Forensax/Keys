@@ -170,6 +170,17 @@ def upsert_models(db: Session, provider: Provider, model_payloads: list[Any]) ->
     return seen
 
 
+def get_default_model_id(provider: Provider) -> str | None:
+    if not provider.models:
+        return None
+
+    model_ids = {model.model_id for model in provider.models}
+    latest_test = provider.tests[0] if provider.tests else None
+    if latest_test and latest_test.model_id in model_ids:
+        return latest_test.model_id
+    return provider.models[0].model_id
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, db: Annotated[Session, Depends(get_db)]) -> Response:
     if not is_initialized(db):
@@ -185,6 +196,7 @@ def index(request: Request, db: Annotated[Session, Depends(get_db)]) -> Response
         "index.html",
         {
             "providers": providers,
+            "default_model_ids": {provider.id: get_default_model_id(provider) for provider in providers},
         },
     )
 
