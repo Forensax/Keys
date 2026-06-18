@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import DATA_DIR, settings
@@ -31,10 +31,22 @@ engine = create_engine(settings.database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 
+def ensure_provider_archive_column(bind: Engine = engine) -> None:
+    inspector = inspect(bind)
+    if "providers" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("providers")}
+    if "archived_at" in columns:
+        return
+    with bind.begin() as connection:
+        connection.execute(text("ALTER TABLE providers ADD COLUMN archived_at DATETIME"))
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    ensure_provider_archive_column()
 
 
 def get_db() -> Generator[Session, None, None]:

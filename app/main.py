@@ -108,6 +108,7 @@ def serialize_provider(provider: Provider, include_secret: bool = False, api_key
         "base_url": provider.base_url,
         "notes": provider.notes,
         "enabled": provider.enabled,
+        "archived_at": provider.archived_at.isoformat() if provider.archived_at else None,
         "key_hint": provider.key_hint,
         "models": [
             {
@@ -138,6 +139,24 @@ def safe_json_loads(value: str) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return value
+
+
+def parse_archived_at(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("archived_at 必须是 ISO 8601 时间字符串或 null")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def reject_archived_provider(request: Request, provider: Provider) -> Response | None:
+    if provider.archived_at is None:
+        return None
+    flash(request, "该中转站已归档，只能查看、恢复或永久删除。", "error")
+    return redirect(f"/providers/{provider.id}")
 
 
 def upsert_models(db: Session, provider: Provider, model_payloads: list[Any]) -> int:
@@ -189,7 +208,10 @@ def index(request: Request, db: Annotated[Session, Depends(get_db)]) -> Response
         return render(request, "login.html", {})
 
     providers = db.scalars(
-        select(Provider).options(selectinload(Provider.models), selectinload(Provider.tests)).order_by(Provider.name)
+        select(Provider)
+        .where(Provider.archived_at.is_(None))
+        .options(selectinload(Provider.models), selectinload(Provider.tests))
+        .order_by(Provider.name)
     ).all()
     return render(
         request,
@@ -199,6 +221,21 @@ def index(request: Request, db: Annotated[Session, Depends(get_db)]) -> Response
             "default_model_ids": {provider.id: get_default_model_id(provider) for provider in providers},
         },
     )
+
+
+@app.get("/archive", response_class=HTMLResponse)
+def archive_page(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    providers = db.scalars(
+        select(Provider)
+        .where(Provider.archived_at.is_not(None))
+        .options(selectinload(Provider.models), selectinload(Provider.tests))
+        .order_by(Provider.archived_at.desc(), Provider.name)
+    ).all()
+    return render(request, "archive.html", {"providers": providers})
 
 
 @app.get("/setup", response_class=HTMLResponse)
@@ -349,6 +386,8 @@ def provider_edit(
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     provider = provider_or_404(db, provider_id)
+    if blocked := reject_archived_provider(request, provider):
+        return blocked
     return render(request, "provider_form.html", {"provider": provider, "mode": "edit"})
 
 
@@ -365,6 +404,8 @@ def provider_update(
     enabled: Annotated[str | None, Form()] = None,
 ) -> Response:
     provider = provider_or_404(db, provider_id)
+    if blocked := reject_archived_provider(request, provider):
+        return blocked
     errors = validate_provider_form(name, base_url, api_key, require_key=False)
     if errors:
         return render(
@@ -407,6 +448,40 @@ def provider_update(
     return redirect(f"/providers/{provider.id}")
 
 
+@app.post("/providers/{provider_id}/archive")
+def provider_archive(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    provider_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    provider = provider_or_404(db, provider_id)
+    if provider.archived_at is not None:
+        flash(request, "该中转站已经在归档中。")
+        return redirect("/archive")
+    provider.archived_at = utc_now()
+    db.commit()
+    flash(request, f"“{provider.name}”已归档。")
+    return redirect("/")
+
+
+@app.post("/providers/{provider_id}/restore")
+def provider_restore(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    provider_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    provider = provider_or_404(db, provider_id)
+    if provider.archived_at is None:
+        flash(request, "该中转站当前未归档。")
+        return redirect(f"/providers/{provider.id}")
+    provider.archived_at = None
+    db.commit()
+    flash(request, f"“{provider.name}”已恢复。")
+    return redirect("/archive")
+
+
 @app.post("/providers/{provider_id}/delete")
 def provider_delete(
     request: Request,
@@ -415,10 +490,12 @@ def provider_delete(
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     provider = provider_or_404(db, provider_id)
+    was_archived = provider.archived_at is not None
+    provider_name = provider.name
     db.delete(provider)
     db.commit()
-    flash(request, "中转站已删除。")
-    return redirect("/")
+    flash(request, f"“{provider_name}”已永久删除。" if was_archived else "中转站已删除。")
+    return redirect("/archive" if was_archived else "/")
 
 
 @app.post("/providers/{provider_id}/refresh-models")
@@ -429,6 +506,8 @@ async def provider_refresh_models(
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     provider = provider_or_404(db, provider_id)
+    if blocked := reject_archived_provider(request, provider):
+        return blocked
     fernet = require_session_fernet(request)
     try:
         api_key = decrypt_api_key_with_fernet(provider.encrypted_api_key, fernet)
@@ -472,6 +551,8 @@ async def provider_test(
     model_id: Annotated[str, Form()] = "",
 ) -> Response:
     provider = provider_or_404(db, provider_id)
+    if blocked := reject_archived_provider(request, provider):
+        return blocked
     model_id = model_id.strip()
     if not model_id:
         flash(request, "请选择要测试的模型。", "error")
@@ -592,6 +673,11 @@ async def import_json(
         notes = str(item.get("notes") or "").strip()
         enabled = bool(item.get("enabled", True))
         api_key = str(item.get("api_key") or "").strip()
+        try:
+            archived_at = parse_archived_at(item.get("archived_at"))
+        except (TypeError, ValueError) as exc:
+            errors.append(f"第 {index} 条：archived_at 无效（{exc}）。")
+            continue
         if not name or not base_url:
             errors.append(f"第 {index} 条：name 和 base_url 必填。")
             continue
@@ -608,6 +694,7 @@ async def import_json(
                 key_hint=key_hint(api_key),
                 notes=notes,
                 enabled=enabled,
+                archived_at=archived_at,
             )
             db.add(provider)
             db.flush()
@@ -615,6 +702,7 @@ async def import_json(
         else:
             provider.notes = notes
             provider.enabled = enabled
+            provider.archived_at = archived_at
             if api_key:
                 provider.encrypted_api_key = encrypt_api_key_with_fernet(api_key, fernet)
                 provider.key_hint = key_hint(api_key)

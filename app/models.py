@@ -31,6 +31,7 @@ class Provider(Base):
     key_hint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

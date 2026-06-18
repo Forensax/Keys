@@ -101,6 +101,11 @@ a:hover {
   min-width: 44px;
 }
 
+.actions form,
+.button-row form {
+  margin: 0;
+}
+
 .section-head {
   justify-content: space-between;
   margin-bottom: 18px;
@@ -158,6 +163,18 @@ h2 {
   background: #fff0f0;
   border: 1px solid #efb8b8;
   color: #8e1f1f;
+}
+
+.archive-notice {
+  align-items: center;
+  background: #fff8e8;
+  border: 1px solid #e8cd8c;
+  border-radius: 8px;
+  color: #714c08;
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
 }
 
 .stack {
@@ -315,6 +332,38 @@ table {
 
 .col-actions {
   width: 124px;
+}
+
+.archive-col-name {
+  width: 140px;
+}
+
+.archive-col-url {
+  width: calc(25ch + 24px);
+}
+
+.archive-col-key {
+  width: 150px;
+}
+
+.archive-col-models {
+  width: 70px;
+}
+
+.archive-col-time {
+  width: 170px;
+}
+
+.archive-col-actions {
+  width: 240px;
+}
+
+.archive-time {
+  white-space: nowrap;
+}
+
+.archive-actions {
+  height: 32px;
 }
 
 th,
@@ -589,6 +638,10 @@ tr:last-child td {
   margin-bottom: 16px;
 }
 
+.split.single {
+  grid-template-columns: 1fr;
+}
+
 .panel-head {
   justify-content: space-between;
 }
@@ -626,7 +679,8 @@ tr:last-child td {
   .topbar,
   .section-head,
   .panel-head,
-  .button-row {
+  .button-row,
+  .archive-notice {
     align-items: flex-start;
     flex-direction: column;
   }
