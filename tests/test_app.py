@@ -5,9 +5,21 @@ import json
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine, inspect, select, text  # noqa: E402
 
-from app.db import Base, SessionLocal, engine, ensure_provider_archive_column  # noqa: E402
+from app import main as main_module  # noqa: E402
+from app.db import (  # noqa: E402
+    Base,
+    SessionLocal,
+    engine,
+    ensure_client_profile_columns,
+    ensure_provider_archive_column,
+)
 from app.main import app  # noqa: E402
 from app.models import ConnectivityTest, Provider, ProviderModel  # noqa: E402
+from app.openai_compat import (  # noqa: E402
+    CLIENT_PROFILE_CLAUDE_CODE,
+    CLIENT_PROFILE_CODEX,
+    ConnectivityTestResult,
+)
 
 
 def reset_db() -> None:
@@ -56,10 +68,34 @@ def test_setup_login_and_provider_crud() -> None:
             "api_key": "sk-test-secret",
             "notes": "primary",
             "enabled": "on",
+            "client_profile": CLIENT_PROFILE_CODEX,
         },
         follow_redirects=False,
     )
     assert create.status_code == 303
+
+    with SessionLocal() as db:
+        provider = db.scalar(select(Provider).where(Provider.name == "Relay"))
+        assert provider is not None
+        assert provider.client_profile == CLIENT_PROFILE_CODEX
+
+    updated = client.post(
+        create.headers["location"],
+        data={
+            "name": "Relay",
+            "base_url": "https://relay.example/v1",
+            "api_key": "",
+            "notes": "updated",
+            "enabled": "on",
+            "client_profile": CLIENT_PROFILE_CLAUDE_CODE,
+        },
+        follow_redirects=False,
+    )
+    assert updated.status_code == 303
+    with SessionLocal() as db:
+        provider = db.scalar(select(Provider).where(Provider.name == "Relay"))
+        assert provider is not None
+        assert provider.client_profile == CLIENT_PROFILE_CLAUDE_CODE
 
     with TestClient(app) as fresh_client:
         login = fresh_client.post("/login", data={"password": "long-test-password"}, follow_redirects=False)
@@ -88,6 +124,7 @@ def test_export_without_secrets_omits_api_key() -> None:
     assert response.status_code == 200
     assert response.json()["contains_secrets"] is False
     assert "api_key" not in response.json()["providers"][0]
+    assert response.json()["providers"][0]["client_profile"] == "openai_chat"
     assert "sk-test-secret" not in response.text
 
 
@@ -197,6 +234,76 @@ def test_archive_column_is_added_to_existing_sqlite_table(tmp_path) -> None:
     old_engine.dispose()
 
 
+def test_client_profile_columns_are_added_to_existing_sqlite_tables(tmp_path) -> None:
+    old_engine = create_engine(f"sqlite:///{tmp_path / 'old-profiles.db'}")
+    with old_engine.begin() as connection:
+        connection.execute(text("CREATE TABLE providers (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL)"))
+        connection.execute(
+            text("CREATE TABLE connectivity_tests (id INTEGER PRIMARY KEY, model_id VARCHAR NOT NULL)")
+        )
+        connection.execute(text("INSERT INTO providers (name) VALUES ('Legacy')"))
+        connection.execute(text("INSERT INTO connectivity_tests (model_id) VALUES ('legacy-model')"))
+
+    ensure_client_profile_columns(old_engine)
+
+    for table_name in ("providers", "connectivity_tests"):
+        assert "client_profile" in {column["name"] for column in inspect(old_engine).get_columns(table_name)}
+        with old_engine.connect() as connection:
+            profile = connection.execute(text(f"SELECT client_profile FROM {table_name}")).scalar_one()
+        assert profile == "openai_chat"
+    old_engine.dispose()
+
+
+def test_detail_allows_manual_model_and_temporary_profile(monkeypatch) -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+    calls: list[tuple[str, str]] = []
+
+    async def fake_test(base_url: str, api_key: str, model_id: str, client_profile: str):
+        calls.append((model_id, client_profile))
+        return ConnectivityTestResult("success", 12, "", '{"ok":true}')
+
+    monkeypatch.setattr(main_module, "run_connectivity_test", fake_test)
+
+    detail = client.get(f"/providers/{provider_id}")
+    assert 'list="provider-models"' in detail.text
+    assert "模型缓存为空时，可以直接输入模型名称进行测试。" in detail.text
+
+    tested = client.post(
+        f"/providers/{provider_id}/test",
+        data={"model_id": "manual-model", "client_profile": CLIENT_PROFILE_CLAUDE_CODE},
+        follow_redirects=False,
+    )
+
+    assert tested.status_code == 303
+    assert calls == [("manual-model", CLIENT_PROFILE_CLAUDE_CODE)]
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        test = db.scalar(select(ConnectivityTest).where(ConnectivityTest.provider_id == provider_id))
+        assert provider is not None and provider.client_profile == "openai_chat"
+        assert test is not None and test.client_profile == CLIENT_PROFILE_CLAUDE_CODE
+
+
+def test_invalid_client_profile_is_rejected() -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+
+    response = client.post(
+        "/providers",
+        data={
+            "name": "Relay",
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-test",
+            "client_profile": "unknown-client",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "客户端模式无效" in response.text
+
+
 def test_archive_and_restore_provider_flow() -> None:
     reset_db()
     client = TestClient(app)
@@ -284,6 +391,7 @@ def test_export_and_import_preserve_archive_state_and_support_old_json() -> None
                 "base_url": "https://archived.example/v1",
                 "api_key": "sk-archived",
                 "enabled": True,
+                "client_profile": CLIENT_PROFILE_CODEX,
                 "archived_at": "2026-06-18T08:30:00+00:00",
             },
             {
@@ -306,3 +414,42 @@ def test_export_and_import_preserve_archive_state_and_support_old_json() -> None
     assert "Archived Relay" not in home
     assert "Archived Relay" in archive
     assert "Legacy Active Relay" not in archive
+    with SessionLocal() as db:
+        archived_provider = db.scalar(select(Provider).where(Provider.name == "Archived Relay"))
+        legacy_provider = db.scalar(select(Provider).where(Provider.name == "Legacy Active Relay"))
+        assert archived_provider is not None and archived_provider.client_profile == CLIENT_PROFILE_CODEX
+        assert legacy_provider is not None and legacy_provider.client_profile == "openai_chat"
+
+
+def test_import_rejects_invalid_client_profile_without_stopping_other_rows() -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    payload = {
+        "providers": [
+            {
+                "name": "Invalid Relay",
+                "base_url": "https://invalid.example/v1",
+                "api_key": "sk-invalid",
+                "client_profile": "made-up-client",
+            },
+            {
+                "name": "Valid Relay",
+                "base_url": "https://valid.example/v1",
+                "api_key": "sk-valid",
+                "client_profile": CLIENT_PROFILE_CLAUDE_CODE,
+            },
+        ]
+    }
+
+    response = client.post(
+        "/import",
+        files={"file": ("backup.json", json.dumps(payload).encode("utf-8"), "application/json")},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with SessionLocal() as db:
+        assert db.scalar(select(Provider).where(Provider.name == "Invalid Relay")) is None
+        valid = db.scalar(select(Provider).where(Provider.name == "Valid Relay"))
+        assert valid is not None and valid.client_profile == CLIENT_PROFILE_CLAUDE_CODE

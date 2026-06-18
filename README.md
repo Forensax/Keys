@@ -6,10 +6,11 @@
 
 - 单用户初始化和密码登录。
 - API Key 使用应用密码派生出的密钥进行加密，不以明文保存到数据库。
-- 中转站管理：名称、Base URL、API Key、备注、启用状态。
+- 中转站管理：名称、Base URL、API Key、备注、启用状态和默认客户端模式。
 - 支持软归档：归档后从主页隐藏，可在独立归档页查看、恢复或永久删除。
 - 从 `GET {base_url}/models` 拉取模型列表。
-- 使用 `POST {base_url}/chat/completions` 测试聊天接口连通性。
+- 支持标准 OpenAI、Codex 和 Claude Code 三种客户端兼容测试模式。
+- 模型列表不可用时，可以直接输入模型名称执行连通性测试。
 - 支持 JSON 导入/导出；导出明文 API Key 时需要再次输入密码确认。
 - 默认使用本地 SQLite 数据库，适合个人工具场景。
 
@@ -140,10 +141,16 @@ uvicorn app.main:app --host 0.0.0.0 --port 18000
 第一版只面向标准 OpenAI 兼容接口：
 
 - 鉴权方式：`Authorization: Bearer <api_key>`
-- 模型列表：`GET {base_url}/models`
-- 聊天测试：`POST {base_url}/chat/completions`
+- 模型列表：`GET {base_url}/models`，请求会携带中转站默认客户端模式对应的 Header。
+- 标准 OpenAI：`POST {base_url}/chat/completions`
+- Codex：`POST {base_url}/responses`
+- Claude Code：`POST {base_url}/messages`
 
-Azure OpenAI 的 deployment/api-version 路径、自定义 Header、定时后台测试等能力暂不包含在第一版范围内。
+每个中转站可以保存一个默认客户端模式。详情页测试时可以临时切换模式，该选择只影响本次请求，不会修改中转站默认配置。测试历史会记录每次实际使用的模式。JSON 备份中的 `client_profile` 可取 `openai_chat`、`codex` 或 `claude_code`；旧备份没有该字段时按标准 OpenAI 导入。
+
+Codex 模式会发送 `prompt_cache_key` 和对应的 `Session_id`。这两个字段除模拟 Codex CLI 请求外，也用于触发新版 new-api 内置的 Codex CLI 请求头透传规则。若错误中仍出现 `detected: Go-http-client/1.1`，说明中间层没有把客户端 User-Agent 转发给最终上游，需要由该 new-api 实例的管理员启用“Codex CLI 请求头透传”或升级到包含该功能的版本，客户端无法单方面修复服务端丢弃 Header 的行为。
+
+这些内置模式用于模拟对应客户端的 HTTP 请求特征，但无法绕过 TLS 指纹、设备证明、动态签名或服务端账号策略。Azure OpenAI 的 deployment/api-version 路径、任意自定义 Header、定时后台测试等能力暂不包含在当前范围内。
 
 ## 测试
 

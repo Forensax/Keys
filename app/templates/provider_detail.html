@@ -7,6 +7,7 @@
   <div>
     <h1>{{ provider.name }}</h1>
     <p class="muted mono">{{ provider.base_url }}</p>
+    <p class="muted">默认客户端模式：<strong>{{ client_profile_labels.get(provider.client_profile, provider.client_profile) }}</strong></p>
   </div>
   <div class="button-row">
     {% if provider.archived_at %}
@@ -90,18 +91,34 @@
       <h2>连通性测试</h2>
       <form class="stack" method="post" action="/providers/{{ provider.id }}/test">
         <label>
-          模型
-          <select name="model_id" required>
-            <option value="">选择模型</option>
-            {% for model in provider.models %}
-              <option value="{{ model.model_id }}">{{ model.model_id }}</option>
+          客户端模式
+          <select name="client_profile" required>
+            {% for profile, label in client_profile_labels.items() %}
+              <option value="{{ profile }}" {% if profile == provider.client_profile %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
           </select>
         </label>
-        <button class="primary" type="submit" {% if not provider.models %}disabled{% endif %}>运行聊天测试</button>
+        <label>
+          模型
+          <input
+            name="model_id"
+            list="provider-models"
+            value="{{ default_model_id or '' }}"
+            maxlength="260"
+            placeholder="输入或选择模型名称"
+            autocomplete="off"
+            required
+          >
+          <datalist id="provider-models">
+            {% for model in provider.models %}
+              <option value="{{ model.model_id }}">{{ model.model_id }}</option>
+            {% endfor %}
+          </datalist>
+        </label>
+        <button class="primary" type="submit">运行连通性测试</button>
       </form>
       {% if not provider.models %}
-        <p class="muted small">请先刷新模型，再运行聊天测试。</p>
+        <p class="muted small">模型缓存为空时，可以直接输入模型名称进行测试。</p>
       {% endif %}
     </div>
   {% endif %}
@@ -116,6 +133,7 @@
           <tr>
             <th>时间</th>
             <th>模型</th>
+            <th>客户端模式</th>
             <th>状态</th>
             <th>延迟</th>
             <th>错误</th>
@@ -126,6 +144,7 @@
             <tr>
               <td>{{ test.tested_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
               <td class="mono">{{ test.model_id }}</td>
+              <td>{{ client_profile_labels.get(test.client_profile, test.client_profile) }}</td>
               <td><span class="status {{ test.status }}">{{ "成功" if test.status == "success" else "失败" }}</span></td>
               <td>{{ test.latency_ms if test.latency_ms is not none else "" }}{% if test.latency_ms is not none %} ms{% endif %}</td>
               <td class="narrow">{{ test.error_message }}</td>

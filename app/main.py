@@ -17,7 +17,16 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import BASE_DIR, settings
 from .db import get_db, init_db
 from .models import ConnectivityTest, Provider, ProviderModel, utc_now
-from .openai_compat import compact_json, fetch_models, normalize_base_url, run_chat_completion_test
+from .openai_compat import (
+    CLIENT_PROFILE_LABELS,
+    CLIENT_PROFILE_OPENAI_CHAT,
+    VALID_CLIENT_PROFILES,
+    client_profile_label,
+    compact_json,
+    fetch_models,
+    normalize_base_url,
+    run_connectivity_test,
+)
 from .security import (
     authenticate,
     check_session_password_proof,
@@ -81,6 +90,7 @@ def render(request: Request, name: str, context: dict[str, Any], status_code: in
         "app_name": settings.app_name,
         "authenticated": is_authenticated(request),
         "flash": request.session.pop("flash", None),
+        "client_profile_labels": CLIENT_PROFILE_LABELS,
     }
     base_context.update(context)
     return templates.TemplateResponse(request, name, base_context, status_code=status_code)
@@ -108,6 +118,7 @@ def serialize_provider(provider: Provider, include_secret: bool = False, api_key
         "base_url": provider.base_url,
         "notes": provider.notes,
         "enabled": provider.enabled,
+        "client_profile": provider.client_profile,
         "archived_at": provider.archived_at.isoformat() if provider.archived_at else None,
         "key_hint": provider.key_hint,
         "models": [
@@ -124,6 +135,7 @@ def serialize_provider(provider: Provider, include_secret: bool = False, api_key
     if latest_test:
         payload["latest_test"] = {
             "model_id": latest_test.model_id,
+            "client_profile": latest_test.client_profile,
             "status": latest_test.status,
             "latency_ms": latest_test.latency_ms,
             "error_message": latest_test.error_message,
@@ -315,13 +327,19 @@ def provider_create(
     api_key: Annotated[str, Form()] = "",
     notes: Annotated[str, Form()] = "",
     enabled: Annotated[str | None, Form()] = None,
+    client_profile: Annotated[str, Form()] = CLIENT_PROFILE_OPENAI_CHAT,
 ) -> Response:
-    errors = validate_provider_form(name, base_url, api_key, require_key=True)
+    errors = validate_provider_form(name, base_url, api_key, client_profile, require_key=True)
     if errors:
         return render(
             request,
             "provider_form.html",
-            {"provider": None, "mode": "new", "errors": errors, "form": form_values(name, base_url, notes, enabled)},
+            {
+                "provider": None,
+                "mode": "new",
+                "errors": errors,
+                "form": form_values(name, base_url, notes, enabled, client_profile),
+            },
             400,
         )
 
@@ -333,6 +351,7 @@ def provider_create(
         key_hint=key_hint(api_key),
         notes=notes.strip(),
         enabled=enabled == "on",
+        client_profile=client_profile,
     )
     db.add(provider)
     try:
@@ -346,7 +365,7 @@ def provider_create(
                 "provider": None,
                 "mode": "new",
                 "errors": ["已存在名称和 Base URL 相同的中转站。"],
-                "form": form_values(name, base_url, notes, enabled),
+                "form": form_values(name, base_url, notes, enabled, client_profile),
             },
             400,
         )
@@ -362,7 +381,11 @@ def provider_detail(
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     provider = provider_or_404(db, provider_id)
-    return render(request, "provider_detail.html", {"provider": provider})
+    return render(
+        request,
+        "provider_detail.html",
+        {"provider": provider, "default_model_id": get_default_model_id(provider)},
+    )
 
 
 @app.get("/providers/{provider_id}/api-key")
@@ -402,11 +425,12 @@ def provider_update(
     api_key: Annotated[str, Form()] = "",
     notes: Annotated[str, Form()] = "",
     enabled: Annotated[str | None, Form()] = None,
+    client_profile: Annotated[str, Form()] = CLIENT_PROFILE_OPENAI_CHAT,
 ) -> Response:
     provider = provider_or_404(db, provider_id)
     if blocked := reject_archived_provider(request, provider):
         return blocked
-    errors = validate_provider_form(name, base_url, api_key, require_key=False)
+    errors = validate_provider_form(name, base_url, api_key, client_profile, require_key=False)
     if errors:
         return render(
             request,
@@ -415,7 +439,7 @@ def provider_update(
                 "provider": provider,
                 "mode": "edit",
                 "errors": errors,
-                "form": form_values(name, base_url, notes, enabled),
+                "form": form_values(name, base_url, notes, enabled, client_profile),
             },
             400,
         )
@@ -424,6 +448,7 @@ def provider_update(
     provider.base_url = normalize_base_url(base_url)
     provider.notes = notes.strip()
     provider.enabled = enabled == "on"
+    provider.client_profile = client_profile
     if api_key.strip():
         fernet = require_session_fernet(request)
         provider.encrypted_api_key = encrypt_api_key_with_fernet(api_key.strip(), fernet)
@@ -440,7 +465,7 @@ def provider_update(
                 "provider": provider,
                 "mode": "edit",
                 "errors": ["已存在名称和 Base URL 相同的中转站。"],
-                "form": form_values(name, base_url, notes, enabled),
+                "form": form_values(name, base_url, notes, enabled, client_profile),
             },
             400,
         )
@@ -511,7 +536,7 @@ async def provider_refresh_models(
     fernet = require_session_fernet(request)
     try:
         api_key = decrypt_api_key_with_fernet(provider.encrypted_api_key, fernet)
-        models = await fetch_models(provider.base_url, api_key)
+        models = await fetch_models(provider.base_url, api_key, provider.client_profile)
     except httpx.HTTPStatusError as exc:
         flash(request, f"刷新模型失败：HTTP {exc.response.status_code} {exc.response.text[:300]}", "error")
         return redirect(f"/providers/{provider.id}")
@@ -538,7 +563,7 @@ async def provider_refresh_models(
             model.raw_json = compact_json(model_info.raw_json)
             model.last_seen_at = now
     db.commit()
-    flash(request, f"已获取 {len(models)} 个模型。")
+    flash(request, f"已使用{client_profile_label(provider.client_profile)}模式获取 {len(models)} 个模型。")
     return redirect(f"/providers/{provider.id}")
 
 
@@ -549,24 +574,33 @@ async def provider_test(
     provider_id: int,
     _: Annotated[None, Depends(current_user_required)] = None,
     model_id: Annotated[str, Form()] = "",
+    client_profile: Annotated[str, Form()] = "",
 ) -> Response:
     provider = provider_or_404(db, provider_id)
     if blocked := reject_archived_provider(request, provider):
         return blocked
     model_id = model_id.strip()
     if not model_id:
-        flash(request, "请选择要测试的模型。", "error")
+        flash(request, "请输入要测试的模型。", "error")
+        return redirect(f"/providers/{provider.id}")
+    if len(model_id) > 260:
+        flash(request, "模型名称不能超过 260 个字符。", "error")
+        return redirect(f"/providers/{provider.id}")
+    test_profile = client_profile.strip() or provider.client_profile
+    if test_profile not in VALID_CLIENT_PROFILES:
+        flash(request, "客户端模式无效，未执行测试。", "error")
         return redirect(f"/providers/{provider.id}")
 
     fernet = require_session_fernet(request)
     try:
         api_key = decrypt_api_key_with_fernet(provider.encrypted_api_key, fernet)
-        result = await run_chat_completion_test(provider.base_url, api_key, model_id)
+        result = await run_connectivity_test(provider.base_url, api_key, model_id, test_profile)
     except Exception as exc:
         result = None
         test = ConnectivityTest(
             provider_id=provider.id,
             model_id=model_id,
+            client_profile=test_profile,
             status="failed",
             latency_ms=None,
             error_message=str(exc),
@@ -581,6 +615,7 @@ async def provider_test(
     test = ConnectivityTest(
         provider_id=provider.id,
         model_id=model_id,
+        client_profile=test_profile,
         status=result.status,
         latency_ms=result.latency_ms,
         error_message=result.error_message,
@@ -589,10 +624,11 @@ async def provider_test(
     )
     db.add(test)
     db.commit()
+    profile_name = client_profile_label(test_profile)
     if result.status == "success":
-        flash(request, f"连通性测试成功，耗时 {result.latency_ms} ms。")
+        flash(request, f"{profile_name}连通性测试成功，耗时 {result.latency_ms} ms。")
     else:
-        flash(request, f"连通性测试失败：{result.error_message}", "error")
+        flash(request, f"{profile_name}连通性测试失败：{result.error_message}", "error")
     return redirect(f"/providers/{provider.id}")
 
 
@@ -673,6 +709,10 @@ async def import_json(
         notes = str(item.get("notes") or "").strip()
         enabled = bool(item.get("enabled", True))
         api_key = str(item.get("api_key") or "").strip()
+        client_profile = str(item.get("client_profile") or CLIENT_PROFILE_OPENAI_CHAT).strip()
+        if client_profile not in VALID_CLIENT_PROFILES:
+            errors.append(f"第 {index} 条：client_profile 无效。")
+            continue
         try:
             archived_at = parse_archived_at(item.get("archived_at"))
         except (TypeError, ValueError) as exc:
@@ -694,6 +734,7 @@ async def import_json(
                 key_hint=key_hint(api_key),
                 notes=notes,
                 enabled=enabled,
+                client_profile=client_profile,
                 archived_at=archived_at,
             )
             db.add(provider)
@@ -702,6 +743,7 @@ async def import_json(
         else:
             provider.notes = notes
             provider.enabled = enabled
+            provider.client_profile = client_profile
             provider.archived_at = archived_at
             if api_key:
                 provider.encrypted_api_key = encrypt_api_key_with_fernet(api_key, fernet)
@@ -727,7 +769,13 @@ def health() -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def validate_provider_form(name: str, base_url: str, api_key: str, require_key: bool) -> list[str]:
+def validate_provider_form(
+    name: str,
+    base_url: str,
+    api_key: str,
+    client_profile: str,
+    require_key: bool,
+) -> list[str]:
     errors: list[str] = []
     if not name.strip():
         errors.append("名称必填。")
@@ -738,8 +786,22 @@ def validate_provider_form(name: str, base_url: str, api_key: str, require_key: 
         errors.append("Base URL 必须以 http:// 或 https:// 开头。")
     if require_key and not api_key.strip():
         errors.append("API Key 必填。")
+    if client_profile not in VALID_CLIENT_PROFILES:
+        errors.append("客户端模式无效。")
     return errors
 
 
-def form_values(name: str, base_url: str, notes: str, enabled: str | None) -> dict[str, Any]:
-    return {"name": name, "base_url": base_url, "notes": notes, "enabled": enabled == "on"}
+def form_values(
+    name: str,
+    base_url: str,
+    notes: str,
+    enabled: str | None,
+    client_profile: str,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "base_url": base_url,
+        "notes": notes,
+        "enabled": enabled == "on",
+        "client_profile": client_profile,
+    }

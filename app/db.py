@@ -42,11 +42,31 @@ def ensure_provider_archive_column(bind: Engine = engine) -> None:
         connection.execute(text("ALTER TABLE providers ADD COLUMN archived_at DATETIME"))
 
 
+def ensure_client_profile_columns(bind: Engine = engine) -> None:
+    inspector = inspect(bind)
+    tables = set(inspector.get_table_names())
+    migrations = {
+        "providers": "ALTER TABLE providers ADD COLUMN client_profile VARCHAR(32) NOT NULL DEFAULT 'openai_chat'",
+        "connectivity_tests": (
+            "ALTER TABLE connectivity_tests ADD COLUMN client_profile VARCHAR(32) NOT NULL DEFAULT 'openai_chat'"
+        ),
+    }
+    for table_name, statement in migrations.items():
+        if table_name not in tables:
+            continue
+        columns = {column["name"] for column in inspect(bind).get_columns(table_name)}
+        if "client_profile" in columns:
+            continue
+        with bind.begin() as connection:
+            connection.execute(text(statement))
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     ensure_provider_archive_column()
+    ensure_client_profile_columns()
 
 
 def get_db() -> Generator[Session, None, None]:
