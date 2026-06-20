@@ -15,6 +15,7 @@
 </section>
 
 {% if providers %}
+  {% macro provider_table(provider_list, default_model_ids) %}
   <div class="table-wrap home-table-wrap">
     <table>
       <colgroup>
@@ -38,7 +39,7 @@
         </tr>
       </thead>
       <tbody>
-        {% for provider in providers %}
+        {% for provider in provider_list %}
           {% set latest = provider.tests[0] if provider.tests else None %}
           {% set default_model_id = default_model_ids.get(provider.id) %}
           <tr data-provider-row data-provider-id="{{ provider.id }}" data-provider-enabled="{{ 'true' if provider.enabled else 'false' }}">
@@ -115,6 +116,17 @@
       </tbody>
     </table>
   </div>
+  {% endmacro %}
+
+  {% if ungrouped_providers %}
+    {{ provider_table(ungrouped_providers, default_model_ids) }}
+  {% endif %}
+  {% for group, group_providers in group_sections %}
+    <section class="provider-group-section">
+      <h2 class="provider-group-title">{{ group.name }}</h2>
+      {{ provider_table(group_providers, default_model_ids) }}
+    </section>
+  {% endfor %}
 {% else %}
   <div class="empty panel">
     <h2>还没有中转站</h2>

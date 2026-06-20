@@ -13,12 +13,13 @@ from app.db import (  # noqa: E402
     engine,
     ensure_client_profile_columns,
     ensure_model_source_column,
+    ensure_provider_group_column,
     ensure_provider_archive_column,
     ensure_proxy_columns,
     ensure_test_preference_columns,
 )
 from app.main import app  # noqa: E402
-from app.models import ConnectivityTest, NetworkProxy, Provider, ProviderModel  # noqa: E402
+from app.models import ConnectivityTest, NetworkProxy, Provider, ProviderGroup, ProviderModel  # noqa: E402
 from app.openai_compat import (  # noqa: E402
     CLIENT_PROFILE_CLAUDE_CODE,
     CLIENT_PROFILE_CODEX,
@@ -250,6 +251,128 @@ def test_index_uses_latest_valid_model_then_falls_back_to_first() -> None:
     assert '<div class="actions">' in response.text
 
 
+def test_provider_groups_render_in_creation_order_and_reuse_names_case_insensitively() -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+
+    def create_provider(name: str, base_url: str, group_name: str = "") -> int:
+        response = client.post(
+            "/providers",
+            data={
+                "name": name,
+                "base_url": base_url,
+                "api_key": f"sk-{name}",
+                "enabled": "on",
+                "group_name": group_name,
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        return int(response.headers["location"].rsplit("/", 1)[-1])
+
+    zulu_one_id = create_provider("Zulu One", "https://zulu-one.example/v1", "Zulu")
+    ungrouped_id = create_provider("Ungrouped", "https://ungrouped.example/v1")
+    alpha_id = create_provider("Alpha One", "https://alpha.example/v1", "Alpha")
+    zulu_two_id = create_provider("Zulu Two", "https://zulu-two.example/v1", "  zULU  ")
+
+    with SessionLocal() as db:
+        groups = list(db.scalars(select(ProviderGroup).order_by(ProviderGroup.created_at, ProviderGroup.id)).all())
+        assert [group.name for group in groups] == ["Zulu", "Alpha"]
+        zulu_two = db.get(Provider, zulu_two_id)
+        assert zulu_two is not None and zulu_two.group is not None
+        assert zulu_two.group.name == "Zulu"
+
+    home = client.get("/").text
+    assert home.count('class="table-wrap home-table-wrap"') == 3
+    assert home.index(f'href="/providers/{ungrouped_id}"') < home.index(
+        '<h2 class="provider-group-title">Zulu</h2>'
+    )
+    assert home.index('<h2 class="provider-group-title">Zulu</h2>') < home.index(
+        '<h2 class="provider-group-title">Alpha</h2>'
+    )
+    assert home.count("data-provider-row") == 4
+
+    edit = client.get(f"/providers/{zulu_two_id}").text
+    assert "分组：<strong>Zulu</strong>" in edit
+    form = client.get(f"/providers/{zulu_two_id}/edit").text
+    assert 'value="Zulu"' in form
+    assert '<option value="Alpha"></option>' in form
+
+    client.post(
+        f"/providers/{zulu_one_id}",
+        data={
+            "name": "Zulu One",
+            "base_url": "https://zulu-one.example/v1",
+            "api_key": "",
+            "enabled": "on",
+            "group_name": "alpha",
+        },
+    )
+    client.post(
+        f"/providers/{zulu_two_id}",
+        data={
+            "name": "Zulu Two",
+            "base_url": "https://zulu-two.example/v1",
+            "api_key": "",
+            "enabled": "on",
+            "group_name": "",
+        },
+    )
+    with SessionLocal() as db:
+        assert [group.name for group in db.scalars(select(ProviderGroup)).all()] == ["Alpha"]
+        assert db.get(Provider, zulu_two_id).group_id is None
+        assert db.get(Provider, alpha_id).group.name == "Alpha"
+
+
+def test_group_validation_rolls_back_new_groups_and_archives_keep_group() -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+
+    invalid = client.post(
+        "/providers",
+        data={
+            "name": "Invalid Group Relay",
+            "base_url": "https://invalid-group.example/v1",
+            "api_key": "sk-invalid",
+            "group_name": "g" * 101,
+        },
+    )
+    assert invalid.status_code == 400
+    assert "分组名称不能超过 100 个字符" in invalid.text
+
+    duplicate = client.post(
+        "/providers",
+        data={
+            "name": "Relay",
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-duplicate",
+            "group_name": "Should Roll Back",
+        },
+    )
+    assert duplicate.status_code == 400
+    with SessionLocal() as db:
+        assert db.scalar(select(ProviderGroup)) is None
+
+    client.post(
+        f"/providers/{provider_id}",
+        data={
+            "name": "Relay",
+            "base_url": "https://relay.example/v1",
+            "api_key": "",
+            "enabled": "on",
+            "group_name": "Archive Only",
+        },
+    )
+    client.post(f"/providers/{provider_id}/archive")
+    assert '<h2 class="provider-group-title">Archive Only</h2>' not in client.get("/").text
+    assert '<option value="Archive Only"></option>' in client.get("/providers/new").text
+    client.post(f"/providers/{provider_id}/delete")
+    with SessionLocal() as db:
+        assert db.scalar(select(ProviderGroup)) is None
+
+
 def test_archive_column_is_added_to_existing_sqlite_table(tmp_path) -> None:
     old_engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
     with old_engine.begin() as connection:
@@ -345,6 +468,20 @@ def test_model_source_column_is_added_to_existing_model_table(tmp_path) -> None:
     with old_engine.connect() as connection:
         is_manual = connection.execute(text("SELECT is_manual FROM provider_models")).scalar_one()
     assert not is_manual
+    old_engine.dispose()
+
+
+def test_provider_group_column_is_added_to_existing_provider_table(tmp_path) -> None:
+    old_engine = create_engine(f"sqlite:///{tmp_path / 'old-provider-groups.db'}")
+    with old_engine.begin() as connection:
+        connection.execute(text("CREATE TABLE providers (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL)"))
+        connection.execute(text("INSERT INTO providers (name) VALUES ('Legacy')"))
+
+    ensure_provider_group_column(old_engine)
+
+    assert "group_id" in {column["name"] for column in inspect(old_engine).get_columns("providers")}
+    with old_engine.connect() as connection:
+        assert connection.execute(text("SELECT group_id FROM providers")).scalar_one() is None
     old_engine.dispose()
 
 
@@ -792,6 +929,57 @@ def test_export_and_import_preserve_archive_state_and_support_old_json() -> None
         assert len(legacy_provider.models) == 1
         assert legacy_provider.models[0].model_id == "legacy-model"
         assert legacy_provider.models[0].is_manual is False
+        assert legacy_provider.group_id is None
+
+
+def test_group_export_and_import_preserve_references_and_creation_order() -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    for name, group_name in (("Zulu Relay", "Zulu"), ("Alpha Relay", "Alpha")):
+        response = client.post(
+            "/providers",
+            data={
+                "name": name,
+                "base_url": f"https://{name.split()[0].lower()}.example/v1",
+                "api_key": f"sk-{name}",
+                "enabled": "on",
+                "group_name": group_name,
+            },
+        )
+        assert response.status_code == 200
+
+    exported = client.post(
+        "/export",
+        data={"include_secrets": "on", "password": "long-test-password"},
+    ).json()
+    assert exported["version"] == 5
+    assert [group["name"] for group in exported["groups"]] == ["Zulu", "Alpha"]
+    assert {provider["name"]: provider["group"] for provider in exported["providers"]} == {
+        "Alpha Relay": "Alpha",
+        "Zulu Relay": "Zulu",
+    }
+
+    reset_db()
+    import_client = TestClient(app)
+    import_client.post(
+        "/setup",
+        data={"password": "long-test-password", "confirm_password": "long-test-password"},
+    )
+    imported = import_client.post(
+        "/import",
+        files={"file": ("backup.json", json.dumps(exported).encode("utf-8"), "application/json")},
+        follow_redirects=False,
+    )
+    assert imported.status_code == 303
+    with SessionLocal() as db:
+        groups = list(db.scalars(select(ProviderGroup).order_by(ProviderGroup.created_at, ProviderGroup.id)).all())
+        assert [group.name for group in groups] == ["Zulu", "Alpha"]
+        providers = list(db.scalars(select(Provider).order_by(Provider.name)).all())
+        assert [(provider.name, provider.group.name) for provider in providers] == [
+            ("Alpha Relay", "Alpha"),
+            ("Zulu Relay", "Zulu"),
+        ]
 
 
 def test_import_rejects_invalid_client_profile_without_stopping_other_rows() -> None:
@@ -1020,7 +1208,7 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
         db.commit()
 
     public_export = client.post("/export", data={"password": ""}).json()
-    assert public_export["version"] == 4
+    assert public_export["version"] == 5
     assert public_export["proxies"][0]["has_auth"] is True
     assert "username" not in public_export["proxies"][0]
     assert "password" not in public_export["proxies"][0]

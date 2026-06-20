@@ -16,7 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .config import BASE_DIR, settings
 from .db import get_db, init_db
-from .models import ConnectivityTest, NetworkProxy, Provider, ProviderModel, utc_now
+from .models import ConnectivityTest, NetworkProxy, Provider, ProviderGroup, ProviderModel, utc_now
 from .openai_compat import (
     CLIENT_PROFILE_LABELS,
     CLIENT_PROFILE_OPENAI_CHAT,
@@ -113,7 +113,7 @@ def provider_or_404(db: Session, provider_id: int) -> Provider:
     provider = db.scalar(
         select(Provider)
         .where(Provider.id == provider_id)
-        .options(selectinload(Provider.models), selectinload(Provider.tests))
+        .options(selectinload(Provider.models), selectinload(Provider.tests), selectinload(Provider.group))
     )
     if provider is None:
         raise HTTPException(status_code=404, detail="中转站不存在。")
@@ -129,6 +129,45 @@ def proxy_or_404(db: Session, proxy_id: int) -> NetworkProxy:
 
 def all_proxies(db: Session) -> list[NetworkProxy]:
     return list(db.scalars(select(NetworkProxy).order_by(NetworkProxy.name)).all())
+
+
+def all_provider_groups(db: Session) -> list[ProviderGroup]:
+    return list(db.scalars(select(ProviderGroup).order_by(ProviderGroup.created_at, ProviderGroup.id)).all())
+
+
+def normalize_group_name(value: str) -> str:
+    return " ".join(value.split())
+
+
+def validate_group_name(value: str) -> tuple[str, str | None]:
+    cleaned = normalize_group_name(value)
+    if len(cleaned) > 100:
+        return cleaned, "分组名称不能超过 100 个字符。"
+    return cleaned, None
+
+
+def resolve_provider_group(db: Session, group_name: str) -> ProviderGroup | None:
+    if not group_name:
+        return None
+    normalized_name = group_name.casefold()
+    group = db.scalar(select(ProviderGroup).where(ProviderGroup.normalized_name == normalized_name))
+    if group is not None:
+        return group
+    group = ProviderGroup(name=group_name, normalized_name=normalized_name)
+    db.add(group)
+    db.flush()
+    return group
+
+
+def delete_group_if_empty(db: Session, group_id: int | None) -> None:
+    if group_id is None:
+        return
+    db.flush()
+    if db.scalar(select(Provider.id).where(Provider.group_id == group_id).limit(1)) is not None:
+        return
+    group = db.get(ProviderGroup, group_id)
+    if group is not None:
+        db.delete(group)
 
 
 def parse_default_proxy(
@@ -195,6 +234,7 @@ def serialize_provider(
         "test_client_profile": provider.test_client_profile,
         "test_network_route": test_network_route or provider.test_network_route or "default",
         "default_proxy": provider.default_proxy.name if provider.default_proxy else None,
+        "group": provider.group.name if provider.group else None,
         "archived_at": provider.archived_at.isoformat() if provider.archived_at else None,
         "key_hint": provider.key_hint,
         "models": [
@@ -391,14 +431,26 @@ def index(request: Request, db: Annotated[Session, Depends(get_db)]) -> Response
     providers = db.scalars(
         select(Provider)
         .where(Provider.archived_at.is_(None))
-        .options(selectinload(Provider.models), selectinload(Provider.tests))
+        .options(selectinload(Provider.models), selectinload(Provider.tests), selectinload(Provider.group))
         .order_by(Provider.name)
     ).all()
+    ungrouped_providers = [provider for provider in providers if provider.group_id is None]
+    providers_by_group: dict[int, list[Provider]] = {}
+    for provider in providers:
+        if provider.group_id is not None:
+            providers_by_group.setdefault(provider.group_id, []).append(provider)
+    group_sections = [
+        (group, providers_by_group[group.id])
+        for group in all_provider_groups(db)
+        if group.id in providers_by_group
+    ]
     return render(
         request,
         "index.html",
         {
             "providers": providers,
+            "ungrouped_providers": ungrouped_providers,
+            "group_sections": group_sections,
             "default_model_ids": {provider.id: get_default_model_id(provider) for provider in providers},
         },
     )
@@ -673,7 +725,11 @@ def provider_new(
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
-    return render(request, "provider_form.html", {"provider": None, "mode": "new", "proxies": all_proxies(db)})
+    return render(
+        request,
+        "provider_form.html",
+        {"provider": None, "mode": "new", "proxies": all_proxies(db), "groups": all_provider_groups(db)},
+    )
 
 
 @app.post("/providers")
@@ -688,8 +744,12 @@ def provider_create(
     enabled: Annotated[str | None, Form()] = None,
     client_profile: Annotated[str, Form()] = CLIENT_PROFILE_OPENAI_CHAT,
     default_proxy_id: Annotated[str, Form()] = "",
+    group_name: Annotated[str, Form()] = "",
 ) -> Response:
     errors = validate_provider_form(name, base_url, api_key, client_profile, require_key=True)
+    clean_group_name, group_error = validate_group_name(group_name)
+    if group_error:
+        errors.append(group_error)
     default_proxy, proxy_error = parse_default_proxy(db, default_proxy_id)
     if proxy_error:
         errors.append(proxy_error)
@@ -701,13 +761,17 @@ def provider_create(
                 "provider": None,
                 "mode": "new",
                 "errors": errors,
-                "form": form_values(name, base_url, notes, enabled, client_profile, default_proxy_id),
+                "form": form_values(
+                    name, base_url, notes, enabled, client_profile, default_proxy_id, clean_group_name
+                ),
                 "proxies": all_proxies(db),
+                "groups": all_provider_groups(db),
             },
             400,
         )
 
     fernet = require_session_fernet(request)
+    group = resolve_provider_group(db, clean_group_name)
     provider = Provider(
         name=name.strip(),
         base_url=normalize_base_url(base_url),
@@ -719,6 +783,7 @@ def provider_create(
         test_client_profile=client_profile,
         test_network_route="default",
         default_proxy_id=default_proxy.id if default_proxy else None,
+        group_id=group.id if group else None,
     )
     db.add(provider)
     try:
@@ -732,8 +797,11 @@ def provider_create(
                 "provider": None,
                 "mode": "new",
                 "errors": ["已存在名称和 Base URL 相同的中转站。"],
-                "form": form_values(name, base_url, notes, enabled, client_profile, default_proxy_id),
+                "form": form_values(
+                    name, base_url, notes, enabled, client_profile, default_proxy_id, clean_group_name
+                ),
                 "proxies": all_proxies(db),
+                "groups": all_provider_groups(db),
             },
             400,
         )
@@ -789,7 +857,12 @@ def provider_edit(
     return render(
         request,
         "provider_form.html",
-        {"provider": provider, "mode": "edit", "proxies": all_proxies(db)},
+        {
+            "provider": provider,
+            "mode": "edit",
+            "proxies": all_proxies(db),
+            "groups": all_provider_groups(db),
+        },
     )
 
 
@@ -806,11 +879,15 @@ def provider_update(
     enabled: Annotated[str | None, Form()] = None,
     client_profile: Annotated[str, Form()] = CLIENT_PROFILE_OPENAI_CHAT,
     default_proxy_id: Annotated[str, Form()] = "",
+    group_name: Annotated[str, Form()] = "",
 ) -> Response:
     provider = provider_or_404(db, provider_id)
     if blocked := reject_archived_provider(request, provider):
         return blocked
     errors = validate_provider_form(name, base_url, api_key, client_profile, require_key=False)
+    clean_group_name, group_error = validate_group_name(group_name)
+    if group_error:
+        errors.append(group_error)
     default_proxy, proxy_error = parse_default_proxy(db, default_proxy_id, provider.default_proxy_id)
     if proxy_error:
         errors.append(proxy_error)
@@ -822,24 +899,31 @@ def provider_update(
                 "provider": provider,
                 "mode": "edit",
                 "errors": errors,
-                "form": form_values(name, base_url, notes, enabled, client_profile, default_proxy_id),
+                "form": form_values(
+                    name, base_url, notes, enabled, client_profile, default_proxy_id, clean_group_name
+                ),
                 "proxies": all_proxies(db),
+                "groups": all_provider_groups(db),
             },
             400,
         )
 
+    old_group_id = provider.group_id
+    group = resolve_provider_group(db, clean_group_name)
     provider.name = name.strip()
     provider.base_url = normalize_base_url(base_url)
     provider.notes = notes.strip()
     provider.enabled = enabled == "on"
     provider.client_profile = client_profile
     provider.default_proxy_id = default_proxy.id if default_proxy else None
+    provider.group_id = group.id if group else None
     if api_key.strip():
         fernet = require_session_fernet(request)
         provider.encrypted_api_key = encrypt_api_key_with_fernet(api_key.strip(), fernet)
         provider.key_hint = key_hint(api_key)
 
     try:
+        delete_group_if_empty(db, old_group_id if old_group_id != provider.group_id else None)
         db.commit()
     except Exception:
         db.rollback()
@@ -850,8 +934,11 @@ def provider_update(
                 "provider": provider,
                 "mode": "edit",
                 "errors": ["已存在名称和 Base URL 相同的中转站。"],
-                "form": form_values(name, base_url, notes, enabled, client_profile, default_proxy_id),
+                "form": form_values(
+                    name, base_url, notes, enabled, client_profile, default_proxy_id, clean_group_name
+                ),
                 "proxies": all_proxies(db),
+                "groups": all_provider_groups(db),
             },
             400,
         )
@@ -902,8 +989,10 @@ def provider_delete(
 ) -> Response:
     provider = provider_or_404(db, provider_id)
     was_archived = provider.archived_at is not None
+    old_group_id = provider.group_id
     provider_name = provider.name
     db.delete(provider)
+    delete_group_if_empty(db, old_group_id)
     db.commit()
     flash(request, f"“{provider_name}”已永久删除。" if was_archived else "中转站已删除。")
     return redirect("/archive" if was_archived else "/")
@@ -1257,16 +1346,24 @@ def export_json(
 
     providers = db.scalars(
         select(Provider)
-        .options(selectinload(Provider.models), selectinload(Provider.tests), selectinload(Provider.default_proxy))
+        .options(
+            selectinload(Provider.models),
+            selectinload(Provider.tests),
+            selectinload(Provider.default_proxy),
+            selectinload(Provider.group),
+        )
         .order_by(Provider.name)
     ).all()
     payload = {
-        "version": 4,
+        "version": 5,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "contains_secrets": include_secret_values,
+        "groups": [],
         "proxies": [],
         "providers": [],
     }
+    for group in all_provider_groups(db):
+        payload["groups"].append({"name": group.name, "created_at": group.created_at.isoformat()})
     for proxy in all_proxies(db):
         username = decrypt_secret_with_fernet(proxy.encrypted_username, fernet) if include_secret_values else ""
         proxy_password = decrypt_secret_with_fernet(proxy.encrypted_password, fernet) if include_secret_values else ""
@@ -1300,11 +1397,15 @@ async def import_json(
 
     providers = payload.get("providers") if isinstance(payload, dict) else None
     proxies = payload.get("proxies", []) if isinstance(payload, dict) else None
+    groups = payload.get("groups", []) if isinstance(payload, dict) else None
     if not isinstance(providers, list):
         flash(request, "导入失败：JSON 必须包含 providers 数组。", "error")
         return redirect("/import-export")
     if not isinstance(proxies, list):
         flash(request, "导入失败：proxies 必须是数组。", "error")
+        return redirect("/import-export")
+    if not isinstance(groups, list):
+        flash(request, "导入失败：groups 必须是数组。", "error")
         return redirect("/import-export")
 
     fernet = require_session_fernet(request)
@@ -1312,7 +1413,41 @@ async def import_json(
     updated = 0
     proxy_created = 0
     proxy_updated = 0
+    group_created = 0
     errors: list[str] = []
+    for index, item in enumerate(groups, start=1):
+        if not isinstance(item, dict):
+            errors.append(f"分组第 {index} 条：分组必须是对象。")
+            continue
+        group_name, group_error = validate_group_name(str(item.get("name") or ""))
+        if group_error or not group_name:
+            errors.append(f"分组第 {index} 条：{group_error or '分组名称不能为空。'}")
+            continue
+        normalized_name = group_name.casefold()
+        group = db.scalar(select(ProviderGroup).where(ProviderGroup.normalized_name == normalized_name))
+        was_created = group is None
+        if group is None:
+            group = ProviderGroup(name=group_name, normalized_name=normalized_name)
+            db.add(group)
+            db.flush()
+            group_created += 1
+        created_at_value = item.get("created_at")
+        if created_at_value not in (None, ""):
+            try:
+                if not isinstance(created_at_value, str):
+                    raise ValueError("created_at 必须是 ISO 8601 时间字符串")
+                created_at = datetime.fromisoformat(created_at_value.replace("Z", "+00:00"))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                group.created_at = created_at.astimezone(timezone.utc)
+            except (TypeError, ValueError) as exc:
+                errors.append(f"分组第 {index} 条：created_at 无效（{exc}）。")
+                if was_created:
+                    db.delete(group)
+                    group_created -= 1
+                continue
+        db.flush()
+
     for index, item in enumerate(proxies, start=1):
         if not isinstance(item, dict):
             errors.append(f"代理第 {index} 条：代理必须是对象。")
@@ -1398,6 +1533,22 @@ async def import_json(
             if default_proxy is None:
                 errors.append(f"第 {index} 条：找不到默认代理“{default_proxy_name}”。")
                 continue
+        imported_group_name = item.get("group")
+        provider_group: ProviderGroup | None = None
+        if imported_group_name not in (None, ""):
+            if not isinstance(imported_group_name, str):
+                errors.append(f"第 {index} 条：group 必须是分组名称或 null。")
+                continue
+            clean_group_name, group_error = validate_group_name(imported_group_name)
+            if group_error or not clean_group_name:
+                errors.append(f"第 {index} 条：{group_error or 'group 不能为空白。'}")
+                continue
+            provider_group = db.scalar(
+                select(ProviderGroup).where(ProviderGroup.normalized_name == clean_group_name.casefold())
+            )
+            if provider_group is None:
+                errors.append(f"第 {index} 条：找不到分组“{clean_group_name}”。")
+                continue
 
         provider = db.scalar(select(Provider).where(Provider.name == name, Provider.base_url == base_url))
         if provider is None:
@@ -1416,6 +1567,7 @@ async def import_json(
                 test_client_profile=test_client_profile,
                 test_network_route=test_network_route,
                 default_proxy_id=default_proxy.id if default_proxy else None,
+                group_id=provider_group.id if provider_group else None,
                 archived_at=archived_at,
             )
             db.add(provider)
@@ -1429,6 +1581,7 @@ async def import_json(
             provider.test_client_profile = test_client_profile
             provider.test_network_route = test_network_route
             provider.default_proxy_id = default_proxy.id if default_proxy else None
+            provider.group_id = provider_group.id if provider_group else None
             provider.archived_at = archived_at
             if api_key:
                 provider.encrypted_api_key = encrypt_api_key_with_fernet(api_key, fernet)
@@ -1439,9 +1592,11 @@ async def import_json(
         if model_count:
             provider.updated_at = utc_now()
 
+    for group in all_provider_groups(db):
+        delete_group_if_empty(db, group.id)
     db.commit()
     message = (
-        f"导入完成：代理新增 {proxy_created} 个、更新 {proxy_updated} 个；"
+        f"导入完成：分组新增 {group_created} 个；代理新增 {proxy_created} 个、更新 {proxy_updated} 个；"
         f"中转站新增 {created} 个、更新 {updated} 个"
     )
     if errors:
@@ -1486,6 +1641,7 @@ def form_values(
     enabled: str | None,
     client_profile: str,
     default_proxy_id: str = "",
+    group_name: str = "",
 ) -> dict[str, Any]:
     return {
         "name": name,
@@ -1494,6 +1650,7 @@ def form_values(
         "enabled": enabled == "on",
         "client_profile": client_profile,
         "default_proxy_id": default_proxy_id,
+        "group_name": group_name,
     }
 
 

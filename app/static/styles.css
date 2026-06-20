@@ -306,6 +306,16 @@ button.small {
   overflow: visible;
 }
 
+.provider-group-section {
+  margin-top: 28px;
+}
+
+.provider-group-title {
+  font-size: 20px;
+  margin: 0 0 10px;
+  overflow-wrap: anywhere;
+}
+
 table {
   border-collapse: collapse;
   table-layout: fixed;

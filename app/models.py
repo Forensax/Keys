@@ -50,6 +50,17 @@ class NetworkProxy(Base):
         return bool(self.encrypted_username or self.encrypted_password)
 
 
+class ProviderGroup(Base):
+    __tablename__ = "provider_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+    providers: Mapped[list["Provider"]] = relationship(back_populates="group")
+
+
 class Provider(Base):
     __tablename__ = "providers"
     __table_args__ = (UniqueConstraint("name", "base_url", name="uq_provider_name_base_url"),)
@@ -68,6 +79,9 @@ class Provider(Base):
     default_proxy_id: Mapped[int | None] = mapped_column(
         ForeignKey("network_proxies.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("provider_groups.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
@@ -81,6 +95,7 @@ class Provider(Base):
         back_populates="provider", cascade="all, delete-orphan", order_by="desc(ConnectivityTest.tested_at)"
     )
     default_proxy: Mapped[NetworkProxy | None] = relationship(foreign_keys=[default_proxy_id])
+    group: Mapped[ProviderGroup | None] = relationship(back_populates="providers", foreign_keys=[group_id])
 
 
 class ProviderModel(Base):

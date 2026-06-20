@@ -31,6 +31,24 @@
   </label>
 
   <label>
+    分组（可选）
+    {% set selected_group_name = values.group_name if values and values.group_name is defined else provider.group.name if provider and provider.group else '' %}
+    <input
+      name="group_name"
+      list="provider-groups"
+      value="{{ selected_group_name }}"
+      maxlength="100"
+      placeholder="选择已有分组或输入新分组"
+      autocomplete="off"
+    >
+    <datalist id="provider-groups">
+      {% for group in groups %}
+        <option value="{{ group.name }}"></option>
+      {% endfor %}
+    </datalist>
+  </label>
+
+  <label>
     Base URL
     <input name="base_url" value="{{ values.base_url if values else provider.base_url if provider else '' }}" placeholder="https://example.com/v1" required>
   </label>

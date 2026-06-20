@@ -113,6 +113,17 @@ def ensure_model_source_column(bind: Engine = engine) -> None:
         )
 
 
+def ensure_provider_group_column(bind: Engine = engine) -> None:
+    inspector = inspect(bind)
+    if "providers" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("providers")}
+    if "group_id" in columns:
+        return
+    with bind.begin() as connection:
+        connection.execute(text("ALTER TABLE providers ADD COLUMN group_id INTEGER"))
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
 
@@ -122,6 +133,7 @@ def init_db() -> None:
     ensure_proxy_columns()
     ensure_test_preference_columns()
     ensure_model_source_column()
+    ensure_provider_group_column()
 
 
 def get_db() -> Generator[Session, None, None]:

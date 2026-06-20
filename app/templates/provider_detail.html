@@ -7,6 +7,7 @@
   <div>
     <h1>{{ provider.name }}</h1>
     <p class="muted mono">{{ provider.base_url }}</p>
+    <p class="muted">分组：<strong>{{ provider.group.name if provider.group else "未分组" }}</strong></p>
     <p class="muted">默认客户端模式：<strong>{{ client_profile_labels.get(provider.client_profile, provider.client_profile) }}</strong></p>
     <p class="muted">默认网络：<strong>{{ provider.default_proxy.name if provider.default_proxy else "直连" }}</strong></p>
   </div>
