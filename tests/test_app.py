@@ -1011,6 +1011,36 @@ def test_home_provider_names_copy_without_changing_open_links() -> None:
     assert 'data-copy-value="Ungrouped Relay"' not in archive.text
 
 
+def test_home_current_model_can_be_copied_without_opening_picker() -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    client.post(
+        "/providers",
+        data={
+            "name": "Copy Model Relay",
+            "base_url": "https://copy-model.example/v1",
+            "api_key": "sk-copy-model",
+            "enabled": "on",
+        },
+    )
+    with SessionLocal() as db:
+        provider = db.scalar(select(Provider).where(Provider.name == "Copy Model Relay"))
+        assert provider is not None
+        provider.models.append(ProviderModel(model_id="gpt-current", owned_by="openai", is_manual=True))
+        provider.test_model_id = "gpt-current"
+        db.commit()
+
+    home = client.get("/")
+    assert home.status_code == 200
+    assert 'title="选择其他模型"' in home.text
+    assert 'data-model-current-copy' in home.text
+    assert 'data-copy-value="gpt-current"' in home.text
+    assert 'title="点击复制 gpt-current"' in home.text
+    assert 'role="button"' in home.text
+    assert 'tabindex="0"' in home.text
+
+
 def test_import_rejects_invalid_client_profile_without_stopping_other_rows() -> None:
     reset_db()
     client = TestClient(app)

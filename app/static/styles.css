@@ -547,6 +547,7 @@ tr:last-child td {
 }
 
 .copy-value.copying,
+.model-picker-current-value.copying,
 .model-picker-option.copying {
   opacity: 0.6;
 }
@@ -598,6 +599,18 @@ tr:last-child td {
   position: absolute;
   right: 10px;
   top: 13px;
+}
+
+.model-picker-current-value {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker-current-value:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 
 .model-picker[open] .model-picker-current {

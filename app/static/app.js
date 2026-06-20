@@ -151,7 +151,7 @@
       return;
     }
 
-    if (target.matches("a")) {
+    if (target.matches("a") || target.matches("[data-model-current-copy]")) {
       event.preventDefault();
     }
 
@@ -166,7 +166,8 @@
         const picker = modelOption.closest("[data-model-picker]");
         const current = picker.querySelector("[data-model-current]");
         current.textContent = text;
-        current.title = text;
+        current.dataset.copyValue = text;
+        current.title = `点击复制 ${text}`;
         picker.removeAttribute("open");
         try {
           await saveTestPreferences(modelOption.dataset.providerId, { model_id: text });
@@ -182,6 +183,15 @@
     } finally {
       target.classList.remove("copying");
     }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    const current = event.target.closest("[data-model-current-copy]");
+    if (!current || (event.key !== "Enter" && event.key !== " ")) {
+      return;
+    }
+    event.preventDefault();
+    current.click();
   });
 
   document.addEventListener("mouseover", (event) => {

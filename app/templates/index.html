@@ -77,9 +77,16 @@
                 >
                   <summary
                     class="model-picker-current mono"
+                    title="选择其他模型"
+                  ><span
+                    class="model-picker-current-value"
+                    role="button"
+                    tabindex="0"
                     data-model-current
-                    title="{{ default_model_id }}"
-                  >{{ default_model_id }}</summary>
+                    data-model-current-copy
+                    data-copy-value="{{ default_model_id }}"
+                    title="点击复制 {{ default_model_id }}"
+                  >{{ default_model_id }}</span></summary>
                   <div class="model-picker-menu">
                     {% for model in provider.models %}
                       <button
