@@ -141,6 +141,7 @@ async def test_claude_code_profile_builds_messages_request() -> None:
         assert request.headers["x-app"] == "cli"
         assert request.headers["anthropic-version"] == "2023-06-01"
         assert request.headers["anthropic-beta"] == CLAUDE_CODE_BETA
+        assert "context-1m-2025-08-07" in request.headers["anthropic-beta"].split(",")
         assert request.headers["anthropic-dangerous-direct-browser-access"] == "true"
         body = json.loads(request.content)
         assert body["model"] == "claude-test"
