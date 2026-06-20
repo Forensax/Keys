@@ -23,7 +23,8 @@ CLIENT_PROFILE_LABELS = {
 }
 VALID_CLIENT_PROFILES = frozenset(CLIENT_PROFILE_LABELS)
 
-CODEX_USER_AGENT = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
+CODEX_USER_AGENT = "Codex Desktop/0.141.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.141.0)"
+CODEX_ORIGINATOR = "Codex Desktop"
 CLAUDE_CODE_USER_AGENT = "claude-cli/2.1.181 (external, sdk-cli)"
 CLAUDE_CODE_BETA = (
     "claude-code-20250219,interleaved-thinking-2025-05-14,"
@@ -77,8 +78,7 @@ def auth_headers(api_key: str, client_profile: str = CLIENT_PROFILE_OPENAI_CHAT)
         headers.update(
             {
                 "User-Agent": CODEX_USER_AGENT,
-                "originator": "codex_cli_rs",
-                "OpenAI-Beta": "responses=experimental",
+                "originator": CODEX_ORIGINATOR,
             }
         )
     elif profile == CLIENT_PROFILE_CLAUDE_CODE:
@@ -108,26 +108,91 @@ def response_excerpt(response: httpx.Response | None = None, text: str | None = 
     return (text or "")[:limit]
 
 
+def codex_response_excerpt(response: httpx.Response, limit: int = 1200) -> str:
+    deltas: list[str] = []
+    for line in response.text.splitlines():
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            event = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "response.output_text.delta" and isinstance(event.get("delta"), str):
+            deltas.append(event["delta"])
+    output_text = "".join(deltas).strip()
+    return response_excerpt(response, text=output_text or None, limit=limit)
+
+
 def _claude_code_metadata_user_id() -> str:
     return f"user_{secrets.token_hex(32)}_account_{uuid.uuid4()}_session_{uuid.uuid4()}"
 
 
-def _codex_session_id() -> str:
-    return str(uuid.uuid4())
+def _codex_request_context() -> dict[str, str]:
+    session_id = str(uuid.uuid4())
+    turn_id = str(uuid.uuid4())
+    installation_id = str(uuid.uuid4())
+    window_id = f"{session_id}:0"
+    turn_metadata = compact_json(
+        {
+            "installation_id": installation_id,
+            "session_id": session_id,
+            "thread_id": session_id,
+            "turn_id": turn_id,
+            "window_id": window_id,
+            "request_kind": "turn",
+            "sandbox": "none",
+            "turn_started_at_unix_ms": int(time.time() * 1000),
+        }
+    )
+    return {
+        "session_id": session_id,
+        "thread_id": session_id,
+        "turn_id": turn_id,
+        "installation_id": installation_id,
+        "window_id": window_id,
+        "turn_metadata": turn_metadata,
+    }
 
 
 def build_connectivity_request(client_profile: str, model_id: str) -> tuple[str, dict[str, Any]]:
     profile = validate_client_profile(client_profile)
     if profile == CLIENT_PROFILE_CODEX:
-        session_id = _codex_session_id()
+        context = _codex_request_context()
         return "/responses", {
             "model": model_id,
-            "instructions": "You are Codex, a coding agent. Reply briefly to this connectivity check.",
-            "input": "ping",
-            "max_output_tokens": 16,
-            "prompt_cache_key": session_id,
-            "stream": False,
+            "instructions": "You are Codex, a coding agent based on GPT-5. Reply briefly.",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "This is a connectivity check. Do not call tools."}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Reply exactly with pong."}],
+                },
+            ],
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+            "reasoning": {"effort": "medium"},
             "store": False,
+            "stream": True,
+            "include": ["reasoning.encrypted_content"],
+            "prompt_cache_key": context["session_id"],
+            "text": {"verbosity": "low"},
+            "client_metadata": {
+                "session_id": context["session_id"],
+                "thread_id": context["thread_id"],
+                "turn_id": context["turn_id"],
+                "x-codex-installation-id": context["installation_id"],
+                "x-codex-window-id": context["window_id"],
+                "x-codex-turn-metadata": context["turn_metadata"],
+            },
         }
     if profile == CLIENT_PROFILE_CLAUDE_CODE:
         return "/messages", {
@@ -191,7 +256,17 @@ async def run_connectivity_test(
     url = build_url(base_url, path)
     headers = auth_headers(api_key, client_profile)
     if client_profile == CLIENT_PROFILE_CODEX:
-        headers["Session_id"] = str(payload["prompt_cache_key"])
+        metadata = payload["client_metadata"]
+        headers.update(
+            {
+                "Accept": "text/event-stream",
+                "session-id": metadata["session_id"],
+                "thread-id": metadata["thread_id"],
+                "x-client-request-id": metadata["thread_id"],
+                "x-codex-window-id": metadata["x-codex-window-id"],
+                "x-codex-turn-metadata": metadata["x-codex-turn-metadata"],
+            }
+        )
 
     started = time.perf_counter()
     try:
@@ -203,7 +278,7 @@ async def run_connectivity_test(
         ) as client:
             response = await client.post(url, headers=headers, json=payload)
         latency_ms = int((time.perf_counter() - started) * 1000)
-        excerpt = response_excerpt(response)
+        excerpt = codex_response_excerpt(response) if client_profile == CLIENT_PROFILE_CODEX else response_excerpt(response)
         if response.is_success:
             return ConnectivityTestResult("success", latency_ms, "", excerpt)
         error_message = f"HTTP {response.status_code}: {excerpt[:300]}"

@@ -189,7 +189,7 @@ JSON 默认备份包含分组及其创建顺序、代理名称、地址、启用
 
 详情页会独立保存最近选择的测试模型、客户端模式和网络路径，这些设置用于下一次单站测试和首页“测试全部”。首页模型列表点击后仍会复制模型名称，同时把该模型保存为批量测试模型。“测试全部”仅处理未归档且启用的中转站；缺少模型或代理不可用时不会发送外部请求，但会记录一条失败结果。
 
-Codex 模式会发送 `prompt_cache_key` 和对应的 `Session_id`。这两个字段除模拟 Codex CLI 请求外，也用于触发新版 new-api 内置的 Codex CLI 请求头透传规则。若错误中仍出现 `detected: Go-http-client/1.1`，说明中间层没有把客户端 User-Agent 转发给最终上游，需要由该 new-api 实例的管理员启用“Codex CLI 请求头透传”或升级到包含该功能的版本，客户端无法单方面修复服务端丢弃 Header 的行为。
+Codex 模式会按当前 Codex Desktop 的 Responses 协议发送流式请求，包括结构化消息、`prompt_cache_key`、session/thread/turn/window 关联信息和客户端元数据。测试请求不启用工具，只要求模型简短返回 `pong`；系统会从 SSE 响应中提取实际文本并保存到测试结果。若错误中仍出现 `detected: Go-http-client/1.1`，说明中间层没有把 Codex 客户端 Header 转发给最终上游，需要由该中转站管理员启用请求头透传。
 
 这些内置模式用于模拟对应客户端的 HTTP 请求特征，但无法绕过 TLS 指纹、设备证明、动态签名或服务端账号策略。Azure OpenAI 的 deployment/api-version 路径、任意自定义 Header、定时后台测试等能力暂不包含在当前范围内。
 

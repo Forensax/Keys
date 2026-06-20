@@ -107,18 +107,51 @@ async def test_codex_profile_builds_responses_request() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == "https://relay.example/v1/responses"
         assert request.headers["authorization"] == "Bearer sk-test"
-        assert request.headers["user-agent"].startswith("codex_cli_rs/")
-        assert request.headers["originator"] == "codex_cli_rs"
-        assert request.headers["openai-beta"] == "responses=experimental"
+        assert request.headers["user-agent"].startswith("Codex Desktop/0.141.0")
+        assert request.headers["originator"] == "Codex Desktop"
+        assert request.headers["accept"] == "text/event-stream"
+        assert "openai-beta" not in request.headers
         body = json.loads(request.content)
         assert body["model"] == "gpt-codex"
         assert body["instructions"]
-        assert body["input"] == "ping"
+        assert body["input"][0]["role"] == "developer"
+        assert body["input"][1]["content"][0]["text"] == "Reply exactly with pong."
+        assert body["tools"] == []
+        assert body["tool_choice"] == "auto"
+        assert body["parallel_tool_calls"] is True
+        assert body["reasoning"] == {"effort": "medium"}
+        assert body["include"] == ["reasoning.encrypted_content"]
+        assert body["text"] == {"verbosity": "low"}
+        assert "max_output_tokens" not in body
         assert re.fullmatch(r"[0-9a-f-]{36}", body["prompt_cache_key"])
-        assert request.headers["session_id"] == body["prompt_cache_key"]
-        assert body["stream"] is False
+        metadata = body["client_metadata"]
+        assert request.headers["session-id"] == body["prompt_cache_key"] == metadata["session_id"]
+        assert request.headers["thread-id"] == metadata["thread_id"]
+        assert request.headers["x-client-request-id"] == metadata["thread_id"]
+        assert request.headers["x-codex-window-id"] == metadata["x-codex-window-id"]
+        assert request.headers["x-codex-turn-metadata"] == metadata["x-codex-turn-metadata"]
+        turn_metadata = json.loads(metadata["x-codex-turn-metadata"])
+        assert turn_metadata["session_id"] == metadata["session_id"]
+        assert turn_metadata["thread_id"] == metadata["thread_id"]
+        assert turn_metadata["turn_id"] == metadata["turn_id"]
+        assert turn_metadata["installation_id"] == metadata["x-codex-installation-id"]
+        assert turn_metadata["window_id"] == metadata["x-codex-window-id"]
+        assert turn_metadata["request_kind"] == "turn"
+        assert turn_metadata["sandbox"] == "none"
+        assert isinstance(turn_metadata["turn_started_at_unix_ms"], int)
+        assert body["stream"] is True
         assert body["store"] is False
-        return httpx.Response(204)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'event: response.output_text.delta\n'
+                'data: {"type":"response.output_text.delta","delta":"po"}\n\n'
+                'event: response.output_text.delta\n'
+                'data: {"type":"response.output_text.delta","delta":"ng"}\n\n'
+                'data: [DONE]\n\n'
+            ),
+        )
 
     result = await run_connectivity_test(
         "https://relay.example/v1",
@@ -129,6 +162,7 @@ async def test_codex_profile_builds_responses_request() -> None:
     )
 
     assert result.status == "success"
+    assert result.raw_response_excerpt == "pong"
 
 
 @pytest.mark.asyncio
