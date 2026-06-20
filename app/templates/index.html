@@ -44,7 +44,12 @@
           {% set default_model_id = default_model_ids.get(provider.id) %}
           <tr data-provider-row data-provider-id="{{ provider.id }}" data-provider-enabled="{{ 'true' if provider.enabled else 'false' }}">
             <td class="name-cell">
-              <a class="strong-link" href="/providers/{{ provider.id }}" title="{{ provider.name }}">{{ provider.name }}</a>
+              <a
+                class="strong-link"
+                href="/providers/{{ provider.id }}"
+                data-copy-value="{{ provider.name }}"
+                title="点击复制名称"
+              >{{ provider.name }}</a>
             </td>
             <td class="url-cell mono">
               <button

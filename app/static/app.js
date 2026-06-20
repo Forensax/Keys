@@ -151,6 +151,10 @@
       return;
     }
 
+    if (target.matches("a")) {
+      event.preventDefault();
+    }
+
     try {
       target.classList.add("copying");
       const text = target.dataset.copySecretUrl

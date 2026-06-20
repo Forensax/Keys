@@ -982,6 +982,35 @@ def test_group_export_and_import_preserve_references_and_creation_order() -> Non
         ]
 
 
+def test_home_provider_names_copy_without_changing_open_links() -> None:
+    reset_db()
+    client = TestClient(app)
+    client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
+    for name, group_name in (("Ungrouped Relay", ""), ("Grouped Relay", "Production")):
+        response = client.post(
+            "/providers",
+            data={
+                "name": name,
+                "base_url": f"https://{name.split()[0].lower()}.example/v1",
+                "api_key": f"sk-{name}",
+                "enabled": "on",
+                "group_name": group_name,
+            },
+        )
+        assert response.status_code == 200
+
+    home = client.get("/")
+    assert home.status_code == 200
+    assert home.text.count('class="strong-link"') == 2
+    assert 'data-copy-value="Ungrouped Relay"' in home.text
+    assert 'data-copy-value="Grouped Relay"' in home.text
+    assert home.text.count('title="点击复制名称"') == 2
+    assert home.text.count('class="button small" href="/providers/') >= 4
+
+    archive = client.get("/archive")
+    assert 'data-copy-value="Ungrouped Relay"' not in archive.text
+
+
 def test_import_rejects_invalid_client_profile_without_stopping_other_rows() -> None:
     reset_db()
     client = TestClient(app)
