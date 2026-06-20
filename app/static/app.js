@@ -241,6 +241,29 @@
     }
   });
 
+  const manualModelToggle = document.querySelector("[data-manual-model-toggle]");
+  const manualModelForm = document.querySelector("[data-manual-model-form]");
+  if (manualModelToggle && manualModelForm) {
+    const manualModelInput = manualModelForm.querySelector("[data-manual-model-input]");
+    const manualModelCancel = manualModelForm.querySelector("[data-manual-model-cancel]");
+
+    function setManualModelFormOpen(open) {
+      manualModelForm.hidden = !open;
+      manualModelToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) {
+        manualModelInput.focus();
+      } else {
+        manualModelInput.value = "";
+        manualModelToggle.focus();
+      }
+    }
+
+    manualModelToggle.addEventListener("click", () => {
+      setManualModelFormOpen(manualModelForm.hidden);
+    });
+    manualModelCancel.addEventListener("click", () => setManualModelFormOpen(false));
+  }
+
   const preferenceForm = document.querySelector("[data-test-preferences]");
   if (preferenceForm) {
     const providerId = preferenceForm.dataset.providerId;

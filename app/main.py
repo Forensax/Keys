@@ -200,6 +200,7 @@ def serialize_provider(
         "models": [
             {
                 "model_id": model.model_id,
+                "is_manual": model.is_manual,
                 "owned_by": model.owned_by,
                 "last_seen_at": model.last_seen_at.isoformat(),
                 "raw_json": safe_json_loads(model.raw_json),
@@ -280,6 +281,7 @@ def upsert_models(db: Session, provider: Provider, model_payloads: list[Any]) ->
             continue
         seen += 1
         owned_by = item.get("owned_by") if isinstance(item.get("owned_by"), str) else ""
+        is_manual = item.get("is_manual") is True
         raw = item.get("raw_json") if isinstance(item.get("raw_json"), dict) else item
         model = existing.get(model_id)
         if model is None:
@@ -287,12 +289,14 @@ def upsert_models(db: Session, provider: Provider, model_payloads: list[Any]) ->
                 ProviderModel(
                     provider_id=provider.id,
                     model_id=model_id,
+                    is_manual=is_manual,
                     owned_by=owned_by,
                     raw_json=compact_json(raw),
                     last_seen_at=utc_now(),
                 )
             )
         else:
+            model.is_manual = is_manual
             model.owned_by = owned_by
             model.raw_json = compact_json(raw)
             model.last_seen_at = utc_now()
@@ -308,6 +312,18 @@ def get_default_model_id(provider: Provider) -> str | None:
     if latest_test and latest_test.model_id in model_ids:
         return latest_test.model_id
     return provider.models[0].model_id
+
+
+def select_next_test_model(db: Session, provider: Provider, removed_model_ids: set[str]) -> None:
+    if not provider.test_model_id or provider.test_model_id not in removed_model_ids:
+        return
+    db.flush()
+    provider.test_model_id = db.scalar(
+        select(ProviderModel.model_id)
+        .where(ProviderModel.provider_id == provider.id)
+        .order_by(ProviderModel.is_manual.desc(), ProviderModel.model_id.asc())
+        .limit(1)
+    )
 
 
 def get_test_preferences(provider: Provider) -> tuple[str | None, str, str]:
@@ -893,6 +909,81 @@ def provider_delete(
     return redirect("/archive" if was_archived else "/")
 
 
+@app.post("/providers/{provider_id}/models/manual")
+def provider_add_manual_model(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    provider_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+    model_id: Annotated[str, Form()] = "",
+) -> Response:
+    provider = provider_or_404(db, provider_id)
+    if blocked := reject_archived_provider(request, provider):
+        return blocked
+    clean_model_id = model_id.strip()
+    if not clean_model_id:
+        flash(request, "手动模型名称不能为空。", "error")
+        return redirect(f"/providers/{provider.id}")
+    if len(clean_model_id) > 260:
+        flash(request, "手动模型名称不能超过 260 个字符。", "error")
+        return redirect(f"/providers/{provider.id}")
+
+    model = next((item for item in provider.models if item.model_id == clean_model_id), None)
+    if model is not None:
+        if model.is_manual:
+            flash(request, f"手动模型“{clean_model_id}”已存在。")
+            return redirect(f"/providers/{provider.id}")
+        model.is_manual = True
+        model.last_seen_at = utc_now()
+        message = f"模型“{clean_model_id}”已转为手动模型。"
+    else:
+        db.add(
+            ProviderModel(
+                provider_id=provider.id,
+                model_id=clean_model_id,
+                is_manual=True,
+                owned_by="",
+                raw_json=compact_json({"id": clean_model_id, "source": "manual"}),
+                last_seen_at=utc_now(),
+            )
+        )
+        message = f"手动模型“{clean_model_id}”已添加。"
+    db.commit()
+    flash(request, message)
+    return redirect(f"/providers/{provider.id}")
+
+
+@app.post("/providers/{provider_id}/models/{provider_model_id}/delete")
+def provider_delete_manual_model(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    provider_id: int,
+    provider_model_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    provider = provider_or_404(db, provider_id)
+    if blocked := reject_archived_provider(request, provider):
+        return blocked
+    model = db.scalar(
+        select(ProviderModel).where(
+            ProviderModel.id == provider_model_id,
+            ProviderModel.provider_id == provider.id,
+        )
+    )
+    if model is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+    if not model.is_manual:
+        flash(request, "接口刷新得到的模型不能手动删除。", "error")
+        return redirect(f"/providers/{provider.id}")
+
+    removed_model_id = model.model_id
+    db.delete(model)
+    select_next_test_model(db, provider, {removed_model_id})
+    db.commit()
+    flash(request, f"手动模型“{removed_model_id}”已删除。")
+    return redirect(f"/providers/{provider.id}")
+
+
 @app.post("/providers/{provider_id}/refresh-models")
 async def provider_refresh_models(
     request: Request,
@@ -918,6 +1009,12 @@ async def provider_refresh_models(
         return redirect(f"/providers/{provider.id}")
 
     existing = {model.model_id: model for model in provider.models}
+    refreshed_model_ids = {model.model_id for model in models}
+    removed_model_ids: set[str] = set()
+    for model in provider.models:
+        if not model.is_manual and model.model_id not in refreshed_model_ids:
+            removed_model_ids.add(model.model_id)
+            db.delete(model)
     now = utc_now()
     for model_info in models:
         model = existing.get(model_info.model_id)
@@ -926,6 +1023,7 @@ async def provider_refresh_models(
                 ProviderModel(
                     provider_id=provider.id,
                     model_id=model_info.model_id,
+                    is_manual=False,
                     owned_by=model_info.owned_by,
                     raw_json=compact_json(model_info.raw_json),
                     last_seen_at=now,
@@ -935,6 +1033,7 @@ async def provider_refresh_models(
             model.owned_by = model_info.owned_by
             model.raw_json = compact_json(model_info.raw_json)
             model.last_seen_at = now
+    select_next_test_model(db, provider, removed_model_ids)
     db.commit()
     flash(
         request,
@@ -1162,7 +1261,7 @@ def export_json(
         .order_by(Provider.name)
     ).all()
     payload = {
-        "version": 3,
+        "version": 4,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "contains_secrets": include_secret_values,
         "proxies": [],

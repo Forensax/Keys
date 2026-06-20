@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine, inspect, select, text  # noqa: E402
 
@@ -11,6 +12,7 @@ from app.db import (  # noqa: E402
     SessionLocal,
     engine,
     ensure_client_profile_columns,
+    ensure_model_source_column,
     ensure_provider_archive_column,
     ensure_proxy_columns,
     ensure_test_preference_columns,
@@ -21,6 +23,7 @@ from app.openai_compat import (  # noqa: E402
     CLIENT_PROFILE_CLAUDE_CODE,
     CLIENT_PROFILE_CODEX,
     ConnectivityTestResult,
+    ModelInfo,
 )
 from app.proxy_support import ProxyTestResult  # noqa: E402
 
@@ -222,7 +225,13 @@ def test_index_uses_latest_valid_model_then_falls_back_to_first() -> None:
             db.add_all(
                 [
                     ProviderModel(provider_id=provider_id, model_id="model-a", owned_by="test", raw_json="{}"),
-                    ProviderModel(provider_id=provider_id, model_id="model-b", owned_by="test", raw_json="{}"),
+                    ProviderModel(
+                        provider_id=provider_id,
+                        model_id="model-b",
+                        is_manual=provider_id == provider_ids[2],
+                        owned_by="test",
+                        raw_json="{}",
+                    ),
                 ]
             )
         db.add(ConnectivityTest(provider_id=provider_ids[0], model_id="model-b", status="success"))
@@ -234,7 +243,7 @@ def test_index_uses_latest_valid_model_then_falls_back_to_first() -> None:
     assert response.status_code == 200
     assert f'data-provider-id="{provider_ids[0]}" data-default-model="model-b"' in " ".join(response.text.split())
     assert f'data-provider-id="{provider_ids[1]}" data-default-model="model-a"' in " ".join(response.text.split())
-    assert f'data-provider-id="{provider_ids[2]}" data-default-model="model-a"' in " ".join(response.text.split())
+    assert f'data-provider-id="{provider_ids[2]}" data-default-model="model-b"' in " ".join(response.text.split())
     assert 'class="name-cell"' in response.text
     assert 'class="test-line"' in response.text
     assert 'class="action-cell"' in response.text
@@ -317,6 +326,28 @@ def test_test_preference_columns_are_added_to_existing_provider_table(tmp_path) 
     old_engine.dispose()
 
 
+def test_model_source_column_is_added_to_existing_model_table(tmp_path) -> None:
+    old_engine = create_engine(f"sqlite:///{tmp_path / 'old-model-source.db'}")
+    with old_engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE provider_models ("
+                "id INTEGER PRIMARY KEY, provider_id INTEGER NOT NULL, model_id VARCHAR NOT NULL)"
+            )
+        )
+        connection.execute(
+            text("INSERT INTO provider_models (provider_id, model_id) VALUES (1, 'legacy-model')")
+        )
+
+    ensure_model_source_column(old_engine)
+
+    assert "is_manual" in {column["name"] for column in inspect(old_engine).get_columns("provider_models")}
+    with old_engine.connect() as connection:
+        is_manual = connection.execute(text("SELECT is_manual FROM provider_models")).scalar_one()
+    assert not is_manual
+    old_engine.dispose()
+
+
 def test_detail_allows_manual_model_and_temporary_profile(monkeypatch) -> None:
     reset_db()
     client = TestClient(app)
@@ -388,6 +419,178 @@ def test_detail_model_rows_fill_test_model_and_archive_stays_read_only() -> None
     assert archived_detail.status_code == 200
     assert "data-model-fill" not in archived_detail.text
     assert archived_detail.text.count('class="model-row"') == 2
+    assert "data-manual-model-toggle" not in archived_detail.text
+    assert "/models/manual" not in archived_detail.text
+
+
+def test_manual_models_are_added_sorted_and_only_manual_models_can_be_deleted() -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                ProviderModel(provider_id=provider_id, model_id="remote-z", raw_json="{}"),
+                ProviderModel(provider_id=provider_id, model_id="manual-a", raw_json="{}"),
+            ]
+        )
+        db.commit()
+
+    blank = client.post(
+        f"/providers/{provider_id}/models/manual",
+        data={"model_id": "   "},
+        follow_redirects=True,
+    )
+    assert "手动模型名称不能为空" in blank.text
+    too_long = client.post(
+        f"/providers/{provider_id}/models/manual",
+        data={"model_id": "m" * 261},
+        follow_redirects=True,
+    )
+    assert "不能超过 260 个字符" in too_long.text
+
+    client.post(f"/providers/{provider_id}/models/manual", data={"model_id": " manual-z "})
+    converted = client.post(
+        f"/providers/{provider_id}/models/manual",
+        data={"model_id": "manual-a"},
+        follow_redirects=True,
+    )
+    assert "已转为手动模型" in converted.text
+    duplicate = client.post(
+        f"/providers/{provider_id}/models/manual",
+        data={"model_id": "manual-z"},
+        follow_redirects=True,
+    )
+    assert "已存在" in duplicate.text
+
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        assert [(model.model_id, model.is_manual) for model in provider.models] == [
+            ("manual-a", True),
+            ("manual-z", True),
+            ("remote-z", False),
+        ]
+        provider.test_model_id = "manual-z"
+        manual_a_id = next(model.id for model in provider.models if model.model_id == "manual-a")
+        manual_z_id = next(model.id for model in provider.models if model.model_id == "manual-z")
+        remote_z_id = next(model.id for model in provider.models if model.model_id == "remote-z")
+        db.commit()
+
+    detail = client.get(f"/providers/{provider_id}")
+    assert "data-manual-model-toggle" in detail.text
+    assert detail.text.count('class="model-source"') == 2
+    assert f'/models/{manual_a_id}/delete' in detail.text
+    assert f'/models/{manual_z_id}/delete' in detail.text
+    assert f'/models/{remote_z_id}/delete' not in detail.text
+
+    client.post(f"/providers/{provider_id}/models/{manual_z_id}/delete")
+    blocked = client.post(
+        f"/providers/{provider_id}/models/{remote_z_id}/delete",
+        follow_redirects=True,
+    )
+    assert "接口刷新得到的模型不能手动删除" in blocked.text
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        assert [model.model_id for model in provider.models] == ["manual-a", "remote-z"]
+        assert provider.test_model_id == "manual-a"
+
+
+def test_only_manual_model_appears_on_home_and_deleting_it_clears_test_model() -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+    client.post(f"/providers/{provider_id}/models/manual", data={"model_id": "manual-only"})
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        provider.test_model_id = "manual-only"
+        manual_model_id = provider.models[0].id
+        db.commit()
+
+    home = client.get("/")
+    assert 'data-default-model="manual-only"' in home.text
+    assert 'data-copy-value="manual-only"' in home.text
+
+    client.post(f"/providers/{provider_id}/models/{manual_model_id}/delete")
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        assert provider.models == []
+        assert provider.test_model_id is None
+
+
+def test_refresh_models_synchronizes_remote_models_and_preserves_manual_models(monkeypatch) -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        provider.test_model_id = "remote-stale"
+        db.add_all(
+            [
+                ProviderModel(provider_id=provider_id, model_id="manual-a", is_manual=True, raw_json="{}"),
+                ProviderModel(provider_id=provider_id, model_id="manual-hit", is_manual=True, raw_json="{}"),
+                ProviderModel(provider_id=provider_id, model_id="remote-keep", raw_json="{}"),
+                ProviderModel(provider_id=provider_id, model_id="remote-stale", raw_json="{}"),
+            ]
+        )
+        db.commit()
+
+    async def refreshed(*args, **kwargs):
+        return [
+            ModelInfo("remote-keep", "updated", {"id": "remote-keep"}),
+            ModelInfo("manual-hit", "remote-owner", {"id": "manual-hit"}),
+            ModelInfo("remote-new", "new", {"id": "remote-new"}),
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_models", refreshed)
+    response = client.post(f"/providers/{provider_id}/refresh-models", follow_redirects=True)
+    assert "获取 3 个模型" in response.text
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        assert [(model.model_id, model.is_manual) for model in provider.models] == [
+            ("manual-a", True),
+            ("manual-hit", True),
+            ("remote-keep", False),
+            ("remote-new", False),
+        ]
+        assert next(model for model in provider.models if model.model_id == "manual-hit").owned_by == "remote-owner"
+        assert provider.test_model_id == "manual-a"
+        provider.test_model_id = "remote-keep"
+        db.commit()
+
+    async def empty(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(main_module, "fetch_models", empty)
+    client.post(f"/providers/{provider_id}/refresh-models")
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        assert [model.model_id for model in provider.models] == ["manual-a", "manual-hit"]
+        assert provider.test_model_id == "manual-a"
+
+        db.add(ProviderModel(provider_id=provider_id, model_id="remote-on-failure", raw_json="{}"))
+        db.commit()
+
+    async def failed(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(main_module, "fetch_models", failed)
+    failed_response = client.post(f"/providers/{provider_id}/refresh-models", follow_redirects=True)
+    assert "刷新模型失败" in failed_response.text
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        assert [model.model_id for model in provider.models] == [
+            "manual-a",
+            "manual-hit",
+            "remote-on-failure",
+        ]
 
 
 def test_detail_response_column_uses_success_response_and_failure_error() -> None:
@@ -481,6 +684,16 @@ def test_archived_provider_rejects_mutations_but_allows_copy_and_delete() -> Non
     reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
+    with SessionLocal() as db:
+        model = ProviderModel(
+            provider_id=provider_id,
+            model_id="manual-model",
+            is_manual=True,
+            raw_json="{}",
+        )
+        db.add(model)
+        db.commit()
+        model_id = model.id
     client.post(f"/providers/{provider_id}/archive")
 
     blocked_responses = [
@@ -491,6 +704,15 @@ def test_archived_provider_rejects_mutations_but_allows_copy_and_delete() -> Non
             follow_redirects=False,
         ),
         client.post(f"/providers/{provider_id}/refresh-models", follow_redirects=False),
+        client.post(
+            f"/providers/{provider_id}/models/manual",
+            data={"model_id": "another-model"},
+            follow_redirects=False,
+        ),
+        client.post(
+            f"/providers/{provider_id}/models/{model_id}/delete",
+            follow_redirects=False,
+        ),
         client.post(f"/providers/{provider_id}/test", data={"model_id": "gpt-test"}, follow_redirects=False),
     ]
     assert all(response.status_code == 303 for response in blocked_responses)
@@ -546,6 +768,7 @@ def test_export_and_import_preserve_archive_state_and_support_old_json() -> None
                 "base_url": "https://active.example/v1",
                 "api_key": "sk-active",
                 "enabled": True,
+                "models": [{"model_id": "legacy-model", "owned_by": "legacy"}],
             },
         ],
     }
@@ -566,6 +789,9 @@ def test_export_and_import_preserve_archive_state_and_support_old_json() -> None
         legacy_provider = db.scalar(select(Provider).where(Provider.name == "Legacy Active Relay"))
         assert archived_provider is not None and archived_provider.client_profile == CLIENT_PROFILE_CODEX
         assert legacy_provider is not None and legacy_provider.client_profile == "openai_chat"
+        assert len(legacy_provider.models) == 1
+        assert legacy_provider.models[0].model_id == "legacy-model"
+        assert legacy_provider.models[0].is_manual is False
 
 
 def test_import_rejects_invalid_client_profile_without_stopping_other_rows() -> None:
@@ -780,10 +1006,21 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
         provider.test_model_id = "gpt-batch"
         provider.test_client_profile = CLIENT_PROFILE_CODEX
         provider.test_network_route = f"proxy:{proxy_id}"
+        db.add_all(
+            [
+                ProviderModel(
+                    provider_id=provider.id,
+                    model_id="manual-model",
+                    is_manual=True,
+                    raw_json="{}",
+                ),
+                ProviderModel(provider_id=provider.id, model_id="remote-model", raw_json="{}"),
+            ]
+        )
         db.commit()
 
     public_export = client.post("/export", data={"password": ""}).json()
-    assert public_export["version"] == 3
+    assert public_export["version"] == 4
     assert public_export["proxies"][0]["has_auth"] is True
     assert "username" not in public_export["proxies"][0]
     assert "password" not in public_export["proxies"][0]
@@ -791,6 +1028,7 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
     assert public_export["providers"][0]["test_model_id"] == "gpt-batch"
     assert public_export["providers"][0]["test_client_profile"] == CLIENT_PROFILE_CODEX
     assert public_export["providers"][0]["test_network_route"] == "proxy:Local Proxy"
+    assert [model["is_manual"] for model in public_export["providers"][0]["models"]] == [True, False]
 
     secret_response = client.post(
         "/export",
@@ -826,6 +1064,10 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
         assert provider.test_model_id == "gpt-batch"
         assert provider.test_client_profile == CLIENT_PROFILE_CODEX
         assert provider.test_network_route == f"proxy:{provider.default_proxy.id}"
+        assert [(model.model_id, model.is_manual) for model in provider.models] == [
+            ("manual-model", True),
+            ("remote-model", False),
+        ]
 
 
 def test_test_preferences_endpoint_saves_partial_updates_and_detail_selection() -> None:

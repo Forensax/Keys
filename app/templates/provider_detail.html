@@ -68,31 +68,80 @@
     <div class="panel-head">
       <h2>模型列表</h2>
       {% if not provider.archived_at %}
-        <form method="post" action="/providers/{{ provider.id }}/refresh-models">
-          <button class="primary" type="submit">刷新模型</button>
-        </form>
+        <div class="button-row">
+          <button
+            type="button"
+            data-manual-model-toggle
+            aria-expanded="false"
+            aria-controls="manual-model-form-{{ provider.id }}"
+          >手动添加</button>
+          <form method="post" action="/providers/{{ provider.id }}/refresh-models">
+            <button class="primary" type="submit">刷新模型</button>
+          </form>
+        </div>
       {% endif %}
     </div>
+    {% if not provider.archived_at %}
+      <div
+        class="manual-model-form"
+        id="manual-model-form-{{ provider.id }}"
+        data-manual-model-form
+        hidden
+      >
+        <form class="manual-model-form-row" method="post" action="/providers/{{ provider.id }}/models/manual">
+          <label for="manual-model-id-{{ provider.id }}">模型名称</label>
+          <input
+            id="manual-model-id-{{ provider.id }}"
+            name="model_id"
+            maxlength="260"
+            placeholder="例如 claude-sonnet-4-1"
+            autocomplete="off"
+            required
+            data-manual-model-input
+          >
+          <button class="primary" type="submit">添加</button>
+          <button type="button" data-manual-model-cancel>取消</button>
+        </form>
+      </div>
+    {% endif %}
     {% if provider.models %}
       <div class="model-list">
         {% for model in provider.models %}
           {% if provider.archived_at %}
             <div class="model-row">
               <span class="mono">{{ model.model_id }}</span>
-              <span class="muted small">{{ model.owned_by }}</span>
+              <span class="model-meta muted small">
+                {% if model.owned_by %}<span>{{ model.owned_by }}</span>{% endif %}
+                {% if model.is_manual %}<span class="model-source">手动</span>{% endif %}
+              </span>
             </div>
           {% else %}
-            <button
-              class="model-row model-fill-row{% if model.model_id == default_model_id %} is-selected{% endif %}"
-              type="button"
-              data-model-fill
-              data-model-value="{{ model.model_id }}"
-              aria-pressed="{{ 'true' if model.model_id == default_model_id else 'false' }}"
-              title="选择 {{ model.model_id }} 作为测试模型"
-            >
-              <span class="mono">{{ model.model_id }}</span>
-              <span class="muted small">{{ model.owned_by }}</span>
-            </button>
+            <div class="model-row model-entry">
+              <button
+                class="model-fill-row{% if model.model_id == default_model_id %} is-selected{% endif %}"
+                type="button"
+                data-model-fill
+                data-model-value="{{ model.model_id }}"
+                aria-pressed="{{ 'true' if model.model_id == default_model_id else 'false' }}"
+                title="选择 {{ model.model_id }} 作为测试模型"
+              >
+                <span class="mono">{{ model.model_id }}</span>
+                <span class="model-meta muted small">
+                  {% if model.owned_by %}<span>{{ model.owned_by }}</span>{% endif %}
+                  {% if model.is_manual %}<span class="model-source">手动</span>{% endif %}
+                </span>
+              </button>
+              {% if model.is_manual %}
+                <form
+                  class="model-delete-form"
+                  method="post"
+                  action="/providers/{{ provider.id }}/models/{{ model.id }}/delete"
+                  onsubmit="return confirm('确定删除手动模型“{{ model.model_id }}”吗？测试历史不会被删除。');"
+                >
+                  <button class="small danger" type="submit">删除</button>
+                </form>
+              {% endif %}
+            </div>
           {% endif %}
         {% endfor %}
       </div>

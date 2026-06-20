@@ -100,6 +100,19 @@ def ensure_test_preference_columns(bind: Engine = engine) -> None:
             connection.execute(text(statement))
 
 
+def ensure_model_source_column(bind: Engine = engine) -> None:
+    inspector = inspect(bind)
+    if "provider_models" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("provider_models")}
+    if "is_manual" in columns:
+        return
+    with bind.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE provider_models ADD COLUMN is_manual BOOLEAN NOT NULL DEFAULT 0")
+        )
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
 
@@ -108,6 +121,7 @@ def init_db() -> None:
     ensure_client_profile_columns()
     ensure_proxy_columns()
     ensure_test_preference_columns()
+    ensure_model_source_column()
 
 
 def get_db() -> Generator[Session, None, None]:
