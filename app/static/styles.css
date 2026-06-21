@@ -319,7 +319,7 @@ button.small {
 table {
   border-collapse: collapse;
   table-layout: fixed;
-  min-width: 1120px;
+  min-width: 1144px;
   width: 100%;
 }
 
@@ -345,7 +345,7 @@ table {
 }
 
 .col-actions {
-  width: 176px;
+  width: 200px;
 }
 
 .archive-col-name {
@@ -675,6 +675,8 @@ tr:last-child td {
 
 .action-cell {
   overflow: visible;
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .model-cell {
