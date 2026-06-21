@@ -1452,6 +1452,11 @@ def test_index_exposes_test_all_and_eligible_provider_rows() -> None:
     assert 'class="table-wrap home-table-wrap"' in page
     assert f'data-provider-id="{enabled_id}" data-provider-enabled="true"' in page
     assert f'data-provider-id="{disabled_id}" data-provider-enabled="false"' in page
+    assert page.count("data-test-single") == 2
+    assert 'href="/providers/' in page
+    assert '">编辑</a>' in page
+    assert 'data-test-single title="测试 Enabled Relay">测试</button>' in page
+    assert 'data-test-single title="测试 Disabled Relay">测试</button>' in page
     assert page.count("data-test-result") == 2
 
 

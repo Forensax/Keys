@@ -117,27 +117,88 @@
   }
 
   function renderTestResult(cell, payload) {
+    if (!cell) {
+      return;
+    }
     cell.replaceChildren();
     const line = document.createElement("div");
     line.className = "test-line";
     const status = document.createElement("span");
-    status.className = `status ${payload.status}`;
-    status.textContent = payload.status === "success" ? "成功" : payload.status === "testing" ? "测试中" : "失败";
+    const statusName = payload.status || "failed";
+    const statusLabels = {
+      success: "成功",
+      failed: "失败",
+      skipped: "跳过",
+      testing: "测试中",
+    };
+    status.className = `status ${statusName}`;
+    status.textContent = statusLabels[statusName] || "失败";
     const summary = document.createElement("span");
     summary.className = "test-summary muted small";
-    if (payload.status === "testing") {
+    if (statusName === "testing") {
       summary.textContent = "正在连接";
+    } else if (statusName === "skipped") {
+      summary.textContent = payload.error_message || "中转站已跳过";
+      summary.title = summary.textContent;
     } else {
       const latency = payload.latency_ms === null || payload.latency_ms === undefined
         ? ""
         : ` · ${payload.latency_ms} ms`;
       summary.textContent = `${payload.model_id || "未知模型"}${latency}`;
-      summary.title = payload.status === "failed" && payload.error_message
+      summary.title = statusName === "failed" && payload.error_message
         ? payload.error_message
         : summary.textContent;
     }
     line.append(status, summary);
     cell.appendChild(line);
+  }
+
+  async function runSavedProviderTest(row, options) {
+    const settings = options || {};
+    const failureMessage = settings.failureMessage || "测试请求失败";
+    const cell = row.querySelector("[data-test-result]");
+    if (settings.renderTesting !== false) {
+      renderTestResult(cell, { status: "testing" });
+    }
+    try {
+      const response = await fetch(`/providers/${row.dataset.providerId}/test-saved`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        credentials: "same-origin",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (payload.status === "skipped") {
+        const skippedPayload = {
+          status: "skipped",
+          model_id: "已跳过",
+          error_message: payload.error_message || payload.error || "中转站已跳过",
+        };
+        renderTestResult(cell, skippedPayload);
+        return { status: "skipped", payload: skippedPayload };
+      }
+      if (!response.ok) {
+        const failurePayload = {
+          status: "failed",
+          model_id: "请求失败",
+          error_message: payload.error || payload.error_message || failureMessage,
+        };
+        renderTestResult(cell, failurePayload);
+        return { status: "failed", payload: failurePayload };
+      }
+      renderTestResult(cell, payload);
+      return {
+        status: payload.status === "success" ? "success" : "failed",
+        payload,
+      };
+    } catch (error) {
+      const failurePayload = {
+        status: "failed",
+        model_id: "请求失败",
+        error_message: error.message || failureMessage,
+      };
+      renderTestResult(cell, failurePayload);
+      return { status: "failed", payload: failurePayload };
+    }
   }
 
   document.addEventListener("click", async (event) => {
@@ -370,43 +431,16 @@
         while (nextIndex < rows.length) {
           const row = rows[nextIndex];
           nextIndex += 1;
-          const cell = row.querySelector("[data-test-result]");
-          try {
-            const response = await fetch(`/providers/${row.dataset.providerId}/test-saved`, {
-              method: "POST",
-              headers: { Accept: "application/json" },
-              credentials: "same-origin",
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (payload.status === "skipped") {
-              skipped += 1;
-              renderTestResult(cell, {
-                status: "failed",
-                model_id: "已跳过",
-                error_message: payload.error_message || "中转站已跳过",
-              });
-            } else if (!response.ok) {
-              failed += 1;
-              renderTestResult(cell, {
-                status: "failed",
-                model_id: "请求失败",
-                error_message: payload.error || payload.error_message || "批量测试请求失败",
-              });
-            } else {
-              renderTestResult(cell, payload);
-              if (payload.status === "success") {
-                succeeded += 1;
-              } else {
-                failed += 1;
-              }
-            }
-          } catch (error) {
+          const result = await runSavedProviderTest(row, {
+            failureMessage: "批量测试请求失败",
+            renderTesting: false,
+          });
+          if (result.status === "success") {
+            succeeded += 1;
+          } else if (result.status === "skipped") {
+            skipped += 1;
+          } else {
             failed += 1;
-            renderTestResult(cell, {
-              status: "failed",
-              model_id: "请求失败",
-              error_message: error.message || "批量测试请求失败",
-            });
           }
         }
       }
@@ -418,5 +452,27 @@
       showToast(`测试完成：成功 ${succeeded}，失败 ${failed}，跳过 ${skipped}`, failed > 0);
     });
   }
+
+  document.querySelectorAll("[data-test-single]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const row = button.closest("[data-provider-row]");
+      if (!row) {
+        return;
+      }
+      button.disabled = true;
+      const originalText = button.textContent;
+      button.textContent = "测试中";
+      const result = await runSavedProviderTest(row, { failureMessage: "单站测试请求失败" });
+      button.disabled = false;
+      button.textContent = originalText;
+      if (result.status === "success") {
+        showToast("测试成功");
+      } else if (result.status === "skipped") {
+        showToast(result.payload.error_message || "中转站已跳过", true);
+      } else {
+        showToast(result.payload.error_message ? `测试失败：${result.payload.error_message}` : "测试失败", true);
+      }
+    });
+  });
 
 })();

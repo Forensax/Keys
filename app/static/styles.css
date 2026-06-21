@@ -319,7 +319,7 @@ button.small {
 table {
   border-collapse: collapse;
   table-layout: fixed;
-  min-width: 1070px;
+  min-width: 1120px;
   width: 100%;
 }
 
@@ -345,7 +345,7 @@ table {
 }
 
 .col-actions {
-  width: 124px;
+  width: 176px;
 }
 
 .archive-col-name {
@@ -726,6 +726,11 @@ tr:last-child td {
 }
 
 .status.disabled {
+  background: #eceff4;
+  color: #60697a;
+}
+
+.status.skipped {
   background: #eceff4;
   color: #60697a;
 }
