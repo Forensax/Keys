@@ -319,33 +319,40 @@ button.small {
 table {
   border-collapse: collapse;
   table-layout: fixed;
-  min-width: 1144px;
+  min-width: 1070px;
   width: 100%;
 }
 
-.col-name {
+.home-table {
+  min-width: 1130px;
+}
+
+.home-table .col-name {
   width: 120px;
 }
 
-.col-url {
-  width: calc(25ch + 24px);
+.home-table .col-url {
+  width: 208px;
 }
 
-.col-key,
-.col-model {
+.home-table .col-key {
+  width: 160px;
+}
+
+.home-table .col-model {
   width: 180px;
 }
 
-.col-test {
-  width: 220px;
+.home-table .col-test {
+  width: 200px;
 }
 
-.col-enabled {
+.home-table .col-enabled {
   width: 70px;
 }
 
-.col-actions {
-  width: 200px;
+.home-table .col-actions {
+  width: 192px;
 }
 
 .archive-col-name {

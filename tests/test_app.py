@@ -1450,6 +1450,7 @@ def test_index_exposes_test_all_and_eligible_provider_rows() -> None:
     assert "data-test-all" in page
     assert ">测试全部</button>" in page
     assert 'class="table-wrap home-table-wrap"' in page
+    assert 'class="home-table"' in page
     assert f'data-provider-id="{enabled_id}" data-provider-enabled="true"' in page
     assert f'data-provider-id="{disabled_id}" data-provider-enabled="false"' in page
     assert page.count("data-test-single") == 2
