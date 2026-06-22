@@ -10,7 +10,7 @@
   </div>
 </section>
 
-<form method="get" action="/statistics" class="panel statistics-filters">
+<form method="get" action="/statistics" class="panel statistics-filters" data-auto-submit-filter>
   <label>时间范围
     <select name="range">
       <option value="24h" {% if filters.range == '24h' %}selected{% endif %}>最近 24 小时</option>
@@ -33,7 +33,6 @@
       <option value="scheduled" {% if filters.source == 'scheduled' %}selected{% endif %}>定时任务</option>
     </select>
   </label>
-  <button class="primary" type="submit">应用筛选</button>
 </form>
 
 {% if summary.total == 0 %}

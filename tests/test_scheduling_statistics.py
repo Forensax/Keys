@@ -196,6 +196,11 @@ def test_schedule_and_statistics_pages_use_real_history_only() -> None:
         before = len(db.scalars(select(ConnectivityTest)).all())
     legacy_demo_url = client.get("/statistics?range=30d&provider_id=all&source=all&mode=demo")
     assert legacy_demo_url.status_code == 200
+    assert "data-auto-submit-filter" in legacy_demo_url.text
+    assert "应用筛选" not in legacy_demo_url.text
+    assert 'name="range"' in legacy_demo_url.text
+    assert 'name="provider_id"' in legacy_demo_url.text
+    assert 'name="source"' in legacy_demo_url.text
     assert "演示数据" not in legacy_demo_url.text
     assert "数据模式" not in legacy_demo_url.text
     assert "查看演示数据" not in legacy_demo_url.text

@@ -976,8 +976,13 @@ tr:last-child td {
 
 .statistics-filters {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: 18px;
+}
+
+.statistics-filters.is-submitting {
+  opacity: 0.68;
+  pointer-events: none;
 }
 
 .metric-grid {

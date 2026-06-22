@@ -497,6 +497,24 @@
     sync();
   });
 
+  document.querySelectorAll("[data-auto-submit-filter]").forEach((form) => {
+    let submitting = false;
+    form.addEventListener("change", (event) => {
+      if (submitting || !event.target.matches("select")) {
+        return;
+      }
+      submitting = true;
+      form.classList.add("is-submitting");
+      window.setTimeout(() => {
+        if (typeof form.requestSubmit === "function") {
+          form.requestSubmit();
+        } else {
+          form.submit();
+        }
+      }, 0);
+    });
+  });
+
   const statisticsDataNode = document.querySelector("#statistics-data");
   if (statisticsDataNode) {
     const NS = "http://www.w3.org/2000/svg";
