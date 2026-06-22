@@ -6,7 +6,7 @@
 <section class="section-head">
   <div>
     <h1>导入/导出</h1>
-    <p class="muted">用于迁移中转站和网络代理配置，或保留 JSON 备份。</p>
+    <p class="muted">用于迁移中转站、网络代理和定时任务定义，或保留 JSON 备份。</p>
   </div>
 </section>
 
@@ -35,7 +35,7 @@
       </label>
       <button class="primary" type="submit">导入</button>
     </form>
-    <p class="muted small">新增中转站时导入文件必须包含 `api_key`；包含代理认证信息的备份可以完整恢复代理用户名和密码。</p>
+    <p class="muted small">新增中转站时导入文件必须包含 `api_key`；包含代理认证信息的备份可以完整恢复代理用户名和密码。导入的定时任务始终保持停用，后台包装密钥和运行历史不会导入。</p>
   </div>
 </section>
 {% endblock %}

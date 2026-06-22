@@ -30,10 +30,12 @@ _load_dotenv()
 class Settings:
     app_name: str = os.getenv("APP_NAME", "中转站管理")
     database_url: str = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR / 'keys.db'}")
+    session_secret_configured: bool = bool(os.getenv("SESSION_SECRET"))
     session_secret: str = os.getenv("SESSION_SECRET", secrets.token_urlsafe(32))
     cookie_secure: bool = os.getenv("COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
     proxy_test_url: str = os.getenv("PROXY_TEST_URL", "https://api.ipify.org?format=json")
+    app_timezone: str = os.getenv("APP_TIMEZONE", "Asia/Shanghai")
 
 
 settings = Settings()

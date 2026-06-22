@@ -475,4 +475,166 @@
     });
   });
 
+  document.querySelectorAll("[data-schedule-form]").forEach((form) => {
+    const target = form.querySelector("[data-schedule-target]");
+    const kind = form.querySelector("[data-schedule-kind]");
+    const group = form.querySelector("[data-schedule-group]");
+    const providers = form.querySelector("[data-schedule-providers]");
+    const interval = form.querySelector("[data-schedule-interval]");
+    const daily = form.querySelector("[data-schedule-daily]");
+    const sync = () => {
+      if (target) {
+        group.hidden = target.value !== "group";
+        providers.hidden = target.value !== "providers";
+      }
+      if (kind) {
+        interval.hidden = kind.value !== "interval";
+        daily.hidden = kind.value !== "daily";
+      }
+    };
+    target?.addEventListener("change", sync);
+    kind?.addEventListener("change", sync);
+    sync();
+  });
+
+  const statisticsDataNode = document.querySelector("#statistics-data");
+  if (statisticsDataNode) {
+    const NS = "http://www.w3.org/2000/svg";
+    const palette = ["#1769aa", "#b57a22", "#557a3d", "#9a5d86", "#54657a"];
+    const el = (name, attrs = {}, text = "") => {
+      const node = document.createElementNS(NS, name);
+      Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, String(value)));
+      if (text !== "") node.textContent = text;
+      return node;
+    };
+    const addTitle = (node, text) => {
+      node.setAttribute("tabindex", "0");
+      node.append(el("title", {}, text));
+    };
+    const svgFor = (container, height = 280) => {
+      const svg = el("svg", { viewBox: `0 0 960 ${height}`, role: "img", "aria-label": container.getAttribute("aria-label") || "统计图表" });
+      container.replaceChildren(svg);
+      return svg;
+    };
+    const shorten = (value, length = 16) => value.length > length ? `${value.slice(0, length - 1)}…` : value;
+    let stats = null;
+    try { stats = JSON.parse(statisticsDataNode.textContent); } catch (_) { stats = null; }
+
+    const renderTrend = (container, rows) => {
+      if (!rows.length) return;
+      const svg = svgFor(container);
+      const box = { left: 48, top: 16, right: 18, bottom: 42 };
+      const width = 960 - box.left - box.right;
+      const height = 280 - box.top - box.bottom;
+      const max = Math.max(1, ...rows.map((row) => row.success + row.failed));
+      [0, 0.5, 1].forEach((ratio) => {
+        const y = box.top + height * ratio;
+        svg.append(el("line", { x1: box.left, y1: y, x2: 960 - box.right, y2: y, class: "chart-grid-line" }));
+        svg.append(el("text", { x: box.left - 8, y: y + 4, "text-anchor": "end", class: "chart-axis-label" }, String(Math.round(max * (1 - ratio)))));
+      });
+      const step = width / rows.length;
+      const barWidth = Math.max(3, Math.min(30, step * 0.64));
+      rows.forEach((row, index) => {
+        const x = box.left + index * step + (step - barWidth) / 2;
+        const successHeight = row.success / max * height;
+        const failedHeight = row.failed / max * height;
+        const success = el("rect", { x, y: box.top + height - successHeight, width: barWidth, height: successHeight, fill: "#2476b8" });
+        addTitle(success, `${row.label}：成功 ${row.success} 次`);
+        svg.append(success);
+        const failed = el("rect", { x, y: box.top + height - successHeight - failedHeight, width: barWidth, height: failedHeight, fill: "#d1903d" });
+        addTitle(failed, `${row.label}：失败 ${row.failed} 次`);
+        svg.append(failed);
+        const every = Math.max(1, Math.ceil(rows.length / 8));
+        if (index % every === 0 || index === rows.length - 1) svg.append(el("text", { x: x + barWidth / 2, y: 263, "text-anchor": "middle", class: "chart-axis-label" }, row.label.slice(5)));
+      });
+    };
+
+    const renderLatency = (container, series) => {
+      const points = series.flatMap((item) => item.points.filter((point) => point.value !== null));
+      if (!points.length) return;
+      const svg = svgFor(container);
+      const labels = series[0]?.points.map((point) => point.label) || [];
+      const box = { left: 56, top: 16, right: 20, bottom: 42 };
+      const width = 960 - box.left - box.right;
+      const height = 280 - box.top - box.bottom;
+      const max = Math.max(100, ...points.map((point) => point.value));
+      [0, 0.5, 1].forEach((ratio) => {
+        const y = box.top + height * ratio;
+        svg.append(el("line", { x1: box.left, y1: y, x2: 960 - box.right, y2: y, class: "chart-grid-line" }));
+        svg.append(el("text", { x: box.left - 8, y: y + 4, "text-anchor": "end", class: "chart-axis-label" }, `${Math.round(max * (1 - ratio))}`));
+      });
+      series.forEach((item, seriesIndex) => {
+        const color = palette[seriesIndex % palette.length];
+        const segments = [];
+        let current = [];
+        item.points.forEach((point, index) => {
+          if (point.value === null) {
+            if (current.length) segments.push(current);
+            current = [];
+            return;
+          }
+          const x = box.left + (labels.length <= 1 ? width / 2 : index / (labels.length - 1) * width);
+          const y = box.top + height - point.value / max * height;
+          current.push([x, y, point]);
+        });
+        if (current.length) segments.push(current);
+        segments.forEach((segment) => svg.append(el("polyline", { points: segment.map(([x, y]) => `${x},${y}`).join(" "), fill: "none", stroke: color, "stroke-width": 2 })));
+        segments.flat().forEach(([x, y, point]) => {
+          const circle = el("circle", { cx: x, cy: y, r: 4, fill: "white", stroke: color, "stroke-width": 2 });
+          addTitle(circle, `${item.name} · ${point.label}：${point.value} ms`);
+          svg.append(circle);
+        });
+      });
+      const every = Math.max(1, Math.ceil(labels.length / 8));
+      labels.forEach((label, index) => {
+        if (index % every === 0 || index === labels.length - 1) {
+          const x = box.left + (labels.length <= 1 ? width / 2 : index / (labels.length - 1) * width);
+          svg.append(el("text", { x, y: 263, "text-anchor": "middle", class: "chart-axis-label" }, label.slice(5)));
+        }
+      });
+      const legend = document.querySelector('[data-stat-legend="latency"]');
+      if (legend) {
+        legend.replaceChildren(...series.map((item, index) => {
+          const span = document.createElement("span");
+          const swatch = document.createElement("i");
+          swatch.className = "legend-swatch";
+          swatch.style.background = palette[index % palette.length];
+          span.append(swatch, document.createTextNode(item.name));
+          return span;
+        }));
+      }
+    };
+
+    const renderBars = (container, rows, color) => {
+      if (!rows.length) return;
+      const height = Math.max(180, rows.length * 34 + 24);
+      const svg = svgFor(container, height);
+      const left = 210;
+      const width = 720;
+      const max = Math.max(1, ...rows.map((row) => row.value));
+      rows.forEach((row, index) => {
+        const y = 14 + index * 34;
+        svg.append(el("text", { x: left - 10, y: y + 16, "text-anchor": "end", class: "chart-axis-label" }, shorten(row.label, 28)));
+        const bar = el("rect", { x: left, y, width: row.value / max * width, height: 20, rx: 2, fill: color });
+        addTitle(bar, `${row.label}：${row.value} 次`);
+        svg.append(bar);
+        svg.append(el("text", { x: left + row.value / max * width + 8, y: y + 15, class: "chart-value-label" }, String(row.value)));
+      });
+    };
+
+    if (stats) {
+      const trend = document.querySelector('[data-stat-chart="trend"]');
+      const latency = document.querySelector('[data-stat-chart="latency"]');
+      const failures = document.querySelector('[data-stat-chart="failures"]');
+      const sources = document.querySelector('[data-stat-chart="sources"]');
+      if (trend) renderTrend(trend, stats.trend || []);
+      if (latency) renderLatency(latency, stats.latencySeries || []);
+      if (failures) renderBars(failures, (stats.failures || []).map((row) => ({ label: row.reason, value: row.count })), "#b57a22");
+      if (sources) renderBars(sources, [
+        { label: "手动测试", value: stats.sources?.manual || 0 },
+        { label: "定时任务", value: stats.sources?.scheduled || 0 },
+      ], "#1769aa");
+    }
+  }
+
 })();

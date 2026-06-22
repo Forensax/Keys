@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}统计 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="section-head statistics-head">
+  <div>
+    <h1>测试统计</h1>
+    <p class="muted">从真实连通性测试历史汇总成功率、延迟、失败原因和测试来源。</p>
+  </div>
+</section>
+
+{% if is_demo %}
+  <div class="flash demo-banner"><strong>演示数据</strong> · 由内存确定性生成，不会写入、修改或删除数据库记录。</div>
+{% endif %}
+
+<form method="get" action="/statistics" class="panel statistics-filters">
+  <label>时间范围
+    <select name="range">
+      <option value="24h" {% if filters.range == '24h' %}selected{% endif %}>最近 24 小时</option>
+      <option value="7d" {% if filters.range == '7d' %}selected{% endif %}>最近 7 天</option>
+      <option value="30d" {% if filters.range == '30d' %}selected{% endif %}>最近 30 天</option>
+      <option value="90d" {% if filters.range == '90d' %}selected{% endif %}>最近 90 天</option>
+      <option value="all" {% if filters.range == 'all' %}selected{% endif %}>全部历史</option>
+    </select>
+  </label>
+  <label>中转站
+    <select name="provider_id" {% if is_demo %}disabled{% endif %}>
+      <option value="all">全部中转站</option>
+      {% for provider in provider_options %}<option value="{{ provider.id }}" {% if filters.provider_id == provider.id|string %}selected{% endif %}>{{ provider.name }}</option>{% endfor %}
+    </select>
+    {% if is_demo %}<input type="hidden" name="provider_id" value="all">{% endif %}
+  </label>
+  <label>测试来源
+    <select name="source">
+      <option value="all" {% if filters.source == 'all' %}selected{% endif %}>全部来源</option>
+      <option value="manual" {% if filters.source == 'manual' %}selected{% endif %}>手动测试</option>
+      <option value="scheduled" {% if filters.source == 'scheduled' %}selected{% endif %}>定时任务</option>
+    </select>
+  </label>
+  <label>数据模式
+    <select name="mode">
+      <option value="real" {% if filters.mode == 'real' %}selected{% endif %}>真实历史</option>
+      <option value="demo" {% if filters.mode == 'demo' %}selected{% endif %}>演示数据</option>
+    </select>
+  </label>
+  <button class="primary" type="submit">应用筛选</button>
+</form>
+
+{% if summary.total == 0 %}
+  <section class="panel empty-state">
+    <h2>当前筛选范围内没有测试历史</h2>
+    <p class="muted">先在首页执行单站测试或“测试全部”，也可以切换到演示数据查看完整统计界面。</p>
+    <a class="button primary" href="/statistics?range=30d&provider_id=all&source=all&mode=demo">查看演示数据</a>
+  </section>
+{% else %}
+  <section class="metric-grid" aria-label="关键指标">
+    <article class="metric-card"><span>测试总数</span><strong>{{ summary.total }}</strong></article>
+    <article class="metric-card"><span>成功率</span><strong>{{ summary.success_rate }}%</strong></article>
+    <article class="metric-card"><span>失败数</span><strong>{{ summary.failed }}</strong></article>
+    <article class="metric-card"><span>平均延迟</span><strong>{{ summary.average_latency if summary.average_latency is not none else '—' }}{% if summary.average_latency is not none %}<small> ms</small>{% endif %}</strong></article>
+    <article class="metric-card"><span>P95 延迟</span><strong>{{ summary.p95_latency if summary.p95_latency is not none else '—' }}{% if summary.p95_latency is not none %}<small> ms</small>{% endif %}</strong></article>
+    <article class="metric-card"><span>被测试站点</span><strong>{{ summary.providers }}</strong></article>
+  </section>
+
+  <section class="chart-grid">
+    <article class="panel chart-panel chart-panel-wide">
+      <header><h2>成功与失败趋势</h2><p class="muted small">{{ '按小时' if filters.range == '24h' else '按天' }}统计测试次数，堆叠高度代表总测试量。</p></header>
+      <div class="chart-canvas" data-stat-chart="trend" role="group" aria-label="成功与失败测试次数趋势图"></div>
+      <div class="chart-legend"><span><i class="legend-swatch success-swatch"></i>成功</span><span><i class="legend-swatch failed-swatch"></i>失败</span></div>
+      <details class="chart-data-table"><summary>查看趋势数据表</summary><div class="table-wrap"><table><thead><tr><th>时间</th><th>成功</th><th>失败</th></tr></thead><tbody>{% for row in trend %}<tr><td>{{ row.label }}</td><td>{{ row.success }}</td><td>{{ row.failed }}</td></tr>{% endfor %}</tbody></table></div></details>
+    </article>
+    <article class="panel chart-panel chart-panel-wide">
+      <header><h2>延迟趋势</h2><p class="muted small">测试次数最多的前 5 个站点，单位毫秒；缺失点不会补零。</p></header>
+      <div class="chart-canvas" data-stat-chart="latency" role="group" aria-label="站点平均延迟趋势折线图"></div>
+      <div class="chart-legend" data-stat-legend="latency"></div>
+      <details class="chart-data-table"><summary>查看延迟数据表</summary><div class="table-wrap"><table><thead><tr><th>站点</th><th>时间</th><th>平均延迟</th></tr></thead><tbody>{% for series in latency_series %}{% for point in series.points if point.value is not none %}<tr><td>{{ series.name }}</td><td>{{ point.label }}</td><td>{{ point.value }} ms</td></tr>{% endfor %}{% endfor %}</tbody></table></div></details>
+    </article>
+    <article class="panel chart-panel">
+      <header><h2>失败原因 Top 8</h2><p class="muted small">按已清洗的首行错误信息聚合。</p></header>
+      {% if failures %}<div class="chart-canvas chart-canvas-bars" data-stat-chart="failures" role="group" aria-label="失败原因排行图"></div><details class="chart-data-table"><summary>查看失败原因数据表</summary><div class="table-wrap"><table><thead><tr><th>失败原因</th><th>次数</th></tr></thead><tbody>{% for row in failures %}<tr><td>{{ row.reason }}</td><td>{{ row.count }}</td></tr>{% endfor %}</tbody></table></div></details>{% else %}<p class="muted chart-empty">当前范围内没有失败记录。</p>{% endif %}
+    </article>
+    <article class="panel chart-panel">
+      <header><h2>测试来源</h2><p class="muted small">手动操作与定时任务产生的记录数量。</p></header>
+      <div class="chart-canvas chart-canvas-bars" data-stat-chart="sources" role="group" aria-label="测试来源数量比较图"></div>
+      <details class="chart-data-table"><summary>查看来源数据表</summary><div class="table-wrap"><table><thead><tr><th>来源</th><th>次数</th></tr></thead><tbody><tr><td>手动测试</td><td>{{ sources.manual }}</td></tr><tr><td>定时任务</td><td>{{ sources.scheduled }}</td></tr></tbody></table></div></details>
+    </article>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><h2>站点表现排行</h2><p class="muted">按测试次数降序；时间以 {{ timezone_name }} 显示。</p></div></div>
+    <div class="table-wrap"><table class="statistics-table">
+      <thead><tr><th>站点</th><th>测试数</th><th>成功率</th><th>平均延迟</th><th>P95 延迟</th><th>最近状态</th><th>最近测试</th></tr></thead>
+      <tbody>{% for provider in provider_rows %}<tr>
+        <td><strong>{{ provider.name }}</strong></td><td>{{ provider.total }}</td><td>{{ provider.success_rate }}%</td>
+        <td>{{ provider.average_latency if provider.average_latency is not none else '—' }}{% if provider.average_latency is not none %} ms{% endif %}</td>
+        <td>{{ provider.p95_latency if provider.p95_latency is not none else '—' }}{% if provider.p95_latency is not none %} ms{% endif %}</td>
+        <td><span class="status {{ provider.latest_status }}">{{ '成功' if provider.latest_status == 'success' else '失败' }}</span></td>
+        <td>{{ format_local_datetime(provider.latest_at) }}</td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+  </section>
+{% endif %}
+
+<script type="application/json" id="statistics-data">{{ chart_data_json|safe }}</script>
+{% endblock %}

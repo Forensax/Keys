@@ -124,6 +124,24 @@ def ensure_provider_group_column(bind: Engine = engine) -> None:
         connection.execute(text("ALTER TABLE providers ADD COLUMN group_id INTEGER"))
 
 
+def ensure_scheduling_columns(bind: Engine = engine) -> None:
+    inspector = inspect(bind)
+    if "connectivity_tests" not in inspector.get_table_names():
+        return
+    migrations = {
+        "trigger_source": (
+            "ALTER TABLE connectivity_tests ADD COLUMN trigger_source VARCHAR(32) NOT NULL DEFAULT 'manual'"
+        ),
+        "scheduled_run_id": "ALTER TABLE connectivity_tests ADD COLUMN scheduled_run_id INTEGER",
+    }
+    columns = {column["name"] for column in inspector.get_columns("connectivity_tests")}
+    for column_name, statement in migrations.items():
+        if column_name in columns:
+            continue
+        with bind.begin() as connection:
+            connection.execute(text(statement))
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
 
@@ -134,6 +152,7 @@ def init_db() -> None:
     ensure_test_preference_columns()
     ensure_model_source_column()
     ensure_provider_group_column()
+    ensure_scheduling_columns()
 
 
 def get_db() -> Generator[Session, None, None]:

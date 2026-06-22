@@ -113,6 +113,76 @@ class ProviderModel(Base):
     provider: Mapped[Provider] = relationship(back_populates="models")
 
 
+class ScheduledTask(Base):
+    __tablename__ = "scheduled_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False, default="all")
+    group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("provider_groups.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    schedule_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="interval")
+    interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    daily_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    timezone_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Shanghai")
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    group: Mapped[ProviderGroup | None] = relationship(foreign_keys=[group_id])
+    provider_links: Mapped[list["ScheduledTaskProvider"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan", order_by="ScheduledTaskProvider.id"
+    )
+    runs: Mapped[list["ScheduledRun"]] = relationship(
+        back_populates="task", order_by="desc(ScheduledRun.started_at)", passive_deletes=True
+    )
+
+
+class ScheduledTaskProvider(Base):
+    __tablename__ = "scheduled_task_providers"
+    __table_args__ = (UniqueConstraint("task_id", "provider_id", name="uq_scheduled_task_provider"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("scheduled_tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider_id: Mapped[int | None] = mapped_column(
+        ForeignKey("providers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    provider_name_snapshot: Mapped[str] = mapped_column(String(160), nullable=False)
+    provider_base_url_snapshot: Mapped[str] = mapped_column(String(600), nullable=False)
+
+    task: Mapped[ScheduledTask] = relationship(back_populates="provider_links")
+    provider: Mapped[Provider | None] = relationship(foreign_keys=[provider_id])
+
+
+class ScheduledRun(Base):
+    __tablename__ = "scheduled_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("scheduled_tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    task_name_snapshot: Mapped[str] = mapped_column(String(160), nullable=False)
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False, default="scheduled")
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running", index=True)
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    task: Mapped[ScheduledTask | None] = relationship(back_populates="runs", foreign_keys=[task_id])
+    tests: Mapped[list["ConnectivityTest"]] = relationship(
+        back_populates="scheduled_run", passive_deletes=True
+    )
+
+
 class ConnectivityTest(Base):
     __tablename__ = "connectivity_tests"
 
@@ -125,6 +195,11 @@ class ConnectivityTest(Base):
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     raw_response_excerpt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     network_route: Mapped[str] = mapped_column(String(160), nullable=False, default="直连")
+    trigger_source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual", index=True)
+    scheduled_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("scheduled_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     tested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
     provider: Mapped[Provider] = relationship(back_populates="tests")
+    scheduled_run: Mapped[ScheduledRun | None] = relationship(back_populates="tests", foreign_keys=[scheduled_run_id])

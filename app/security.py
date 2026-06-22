@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
@@ -21,6 +23,7 @@ SESSION_KEY_PASSWORD_PROOF = "password_proof"
 SETTING_PASSWORD_HASH = "password_hash"
 SETTING_ENCRYPTION_SALT = "encryption_salt"
 SETTING_PASSWORD_PROOF_SALT = "password_proof_salt"
+SETTING_SCHEDULER_WRAPPED_VAULT_KEY = "scheduler_wrapped_vault_key"
 
 _ph = PasswordHasher()
 _vault_keys: dict[str, bytes] = {}
@@ -44,6 +47,12 @@ def set_setting(db: Session, key: str, value: str) -> None:
         db.add(setting)
     else:
         setting.value = value
+
+
+def delete_setting(db: Session, key: str) -> None:
+    setting = db.get(AppSetting, key)
+    if setting is not None:
+        db.delete(setting)
 
 
 def is_initialized(db: Session) -> bool:
@@ -84,6 +93,45 @@ def get_fernet(password: str, salt: str) -> Fernet:
 
 def get_fernet_from_key(key: bytes) -> Fernet:
     return Fernet(key)
+
+
+def get_scheduler_wrapping_fernet(db: Session, session_secret: str) -> Fernet:
+    encryption_salt = get_setting(db, SETTING_ENCRYPTION_SALT)
+    if not encryption_salt:
+        raise RuntimeError("应用尚未初始化。")
+    key = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=_decode_salt(encryption_salt),
+        info=b"keys-scheduler-v1",
+    ).derive(session_secret.encode("utf-8"))
+    return Fernet(base64.urlsafe_b64encode(key))
+
+
+def authorize_scheduler_vault(db: Session, password: str, session_secret: str) -> None:
+    encryption_salt = get_setting(db, SETTING_ENCRYPTION_SALT)
+    if not encryption_salt:
+        raise RuntimeError("应用尚未初始化。")
+    vault_key = derive_fernet_key(password, encryption_salt)
+    wrapped = get_scheduler_wrapping_fernet(db, session_secret).encrypt(vault_key).decode("ascii")
+    set_setting(db, SETTING_SCHEDULER_WRAPPED_VAULT_KEY, wrapped)
+    db.flush()
+
+
+def get_scheduler_fernet(db: Session, session_secret: str) -> Fernet | None:
+    wrapped = get_setting(db, SETTING_SCHEDULER_WRAPPED_VAULT_KEY)
+    if not wrapped:
+        return None
+    try:
+        vault_key = get_scheduler_wrapping_fernet(db, session_secret).decrypt(wrapped.encode("ascii"))
+        return get_fernet_from_key(vault_key)
+    except (InvalidToken, ValueError):
+        return None
+
+
+def clear_scheduler_vault(db: Session) -> None:
+    delete_setting(db, SETTING_SCHEDULER_WRAPPED_VAULT_KEY)
+    db.flush()
 
 
 def encrypt_api_key(api_key: str, password: str, salt: str) -> str:

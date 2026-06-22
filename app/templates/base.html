@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v=20260621-15">
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v=20260622-1">
   </head>
   <body>
     <header class="topbar">
@@ -13,6 +13,8 @@
         <nav class="nav">
           <a href="/">首页</a>
           <a href="/providers/new">新增</a>
+          <a href="/schedules">定时任务</a>
+          <a href="/statistics">统计</a>
           <a href="/proxies">代理</a>
           <a href="/archive">归档</a>
           <a href="/import-export">备份</a>
@@ -31,6 +33,6 @@
     </main>
     <div class="copy-toast" data-copy-toast aria-live="polite"></div>
     <div class="response-tooltip" data-response-tooltip-popup role="tooltip" hidden></div>
-    <script src="{{ url_for('static', path='/app.js') }}?v=20260621-15"></script>
+    <script src="{{ url_for('static', path='/app.js') }}?v=20260622-1"></script>
   </body>
 </html>

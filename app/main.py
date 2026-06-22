@@ -4,19 +4,38 @@ import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.sessions import SessionMiddleware
 
 from .config import BASE_DIR, settings
+from .analytics import (
+    VALID_RANGES,
+    VALID_SOURCES,
+    build_statistics,
+    filter_records,
+    generate_demo_records,
+    load_real_records,
+)
 from .db import get_db, init_db
-from .models import ConnectivityTest, NetworkProxy, Provider, ProviderGroup, ProviderModel, utc_now
+from .models import (
+    ConnectivityTest,
+    NetworkProxy,
+    Provider,
+    ProviderGroup,
+    ProviderModel,
+    ScheduledRun,
+    ScheduledTask,
+    ScheduledTaskProvider,
+    utc_now,
+)
 from .openai_compat import (
     CLIENT_PROFILE_LABELS,
     CLIENT_PROFILE_OPENAI_CHAT,
@@ -29,11 +48,14 @@ from .openai_compat import (
 )
 from .security import (
     authenticate,
+    authorize_scheduler_vault,
     check_session_password_proof,
+    clear_scheduler_vault,
     decrypt_api_key_with_fernet,
     decrypt_secret_with_fernet,
     encrypt_api_key_with_fernet,
     encrypt_secret_with_fernet,
+    get_scheduler_fernet,
     is_authenticated,
     is_initialized,
     key_hint,
@@ -49,13 +71,34 @@ from .proxy_support import (
     test_proxy_connection,
     validate_proxy_fields,
 )
+from .scheduler import (
+    calculate_next_run,
+    enqueue_task_run,
+    scheduler_vault_state,
+    set_task_provider_links,
+    start_scheduler,
+    stop_scheduler,
+    task_is_running,
+    task_schedule_summary,
+    task_target_summary,
+    validate_schedule_values,
+)
+from .test_runner import (
+    network_route_snapshot,
+    resolve_network_route_with_fernet,
+    run_provider_connectivity_test,
+)
 
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    yield
+    await start_scheduler()
+    try:
+        yield
+    finally:
+        await stop_scheduler()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -100,9 +143,18 @@ def render(request: Request, name: str, context: dict[str, Any], status_code: in
         "authenticated": is_authenticated(request),
         "flash": request.session.pop("flash", None),
         "client_profile_labels": CLIENT_PROFILE_LABELS,
+        "format_local_datetime": format_local_datetime,
     }
     base_context.update(context)
     return templates.TemplateResponse(request, name, base_context, status_code=status_code)
+
+
+def format_local_datetime(value: datetime | None) -> str:
+    if value is None:
+        return "—"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(ZoneInfo(settings.app_timezone)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def flash(request: Request, message: str, level: str = "info") -> None:
@@ -167,6 +219,7 @@ def delete_group_if_empty(db: Session, group_id: int | None) -> None:
         return
     group = db.get(ProviderGroup, group_id)
     if group is not None:
+        db.execute(update(ScheduledTask).where(ScheduledTask.group_id == group_id).values(group_id=None))
         db.delete(group)
 
 
@@ -195,26 +248,9 @@ def resolve_network_route(
     provider: Provider,
     route: str,
 ) -> tuple[str | None, str]:
-    selected = route.strip() or "default"
-    if selected == "direct":
-        return None, "直连"
-    if selected == "default":
-        proxy = provider.default_proxy
-        if proxy is None:
-            return None, "直连"
-    elif selected.startswith("proxy:"):
-        try:
-            proxy = db.get(NetworkProxy, int(selected.removeprefix("proxy:")))
-        except ValueError as exc:
-            raise ValueError("网络路径无效。") from exc
-        if proxy is None:
-            raise ValueError("所选网络代理不存在。")
-    else:
-        raise ValueError("网络路径无效。")
-    if not proxy.enabled:
-        raise ValueError(f"网络代理“{proxy.name}”已禁用，请启用代理或临时选择直连。")
-    fernet = require_session_fernet(request)
-    return build_proxy_url(proxy, fernet), proxy.name
+    return resolve_network_route_with_fernet(
+        db, provider, route, require_session_fernet(request)
+    )
 
 
 def serialize_provider(
@@ -393,21 +429,6 @@ def validate_test_network_route(
     if not proxy.enabled and route != current_route:
         return "不能选择已禁用的网络代理。"
     return None
-
-
-def network_route_snapshot(db: Session, provider: Provider, route: str) -> str:
-    if route == "direct":
-        return "直连"
-    if route == "default":
-        return provider.default_proxy.name if provider.default_proxy else "直连"
-    if route.startswith("proxy:"):
-        try:
-            proxy_id = int(route.removeprefix("proxy:"))
-        except ValueError:
-            return "无效网络路径"
-        proxy = db.get(NetworkProxy, proxy_id)
-        return proxy.name if proxy else f"已删除代理 #{proxy_id}"
-    return "无效网络路径"
 
 
 def serialize_test_network_route(db: Session, route: str) -> str:
@@ -991,6 +1012,11 @@ def provider_delete(
     was_archived = provider.archived_at is not None
     old_group_id = provider.group_id
     provider_name = provider.name
+    db.execute(
+        update(ScheduledTaskProvider)
+        .where(ScheduledTaskProvider.provider_id == provider.id)
+        .values(provider_id=None)
+    )
     db.delete(provider)
     delete_group_if_empty(db, old_group_id)
     db.commit()
@@ -1149,77 +1175,16 @@ async def execute_provider_test(
     client_profile: str,
     network_route: str,
 ) -> ConnectivityTest:
-    clean_model_id = (model_id or "").strip()
-    stored_model_id = clean_model_id or "（未配置模型）"
-    stored_profile = client_profile if client_profile in VALID_CLIENT_PROFILES else provider.client_profile
-    route_label = network_route_snapshot(db, provider, network_route)
-    preflight_error = ""
-    if not clean_model_id:
-        preflight_error = "未配置测试模型。"
-    elif len(clean_model_id) > 260:
-        preflight_error = "模型名称不能超过 260 个字符。"
-    elif client_profile not in VALID_CLIENT_PROFILES:
-        preflight_error = "客户端模式无效。"
-
-    proxy_url: str | None = None
-    if not preflight_error:
-        try:
-            proxy_url, route_label = resolve_network_route(request, db, provider, network_route)
-        except Exception as exc:
-            preflight_error = sanitize_proxy_error(exc) if proxy_url else str(exc)
-
-    if preflight_error:
-        test = ConnectivityTest(
-            provider_id=provider.id,
-            model_id=stored_model_id,
-            client_profile=stored_profile,
-            status="failed",
-            latency_ms=None,
-            error_message=preflight_error,
-            raw_response_excerpt="",
-            network_route=route_label,
-            tested_at=utc_now(),
-        )
-    else:
-        try:
-            fernet = require_session_fernet(request)
-            api_key = decrypt_api_key_with_fernet(provider.encrypted_api_key, fernet)
-            result = await run_connectivity_test(
-                provider.base_url,
-                api_key,
-                clean_model_id,
-                client_profile,
-                proxy_url=proxy_url,
-            )
-            test = ConnectivityTest(
-                provider_id=provider.id,
-                model_id=clean_model_id,
-                client_profile=client_profile,
-                status=result.status,
-                latency_ms=result.latency_ms,
-                error_message=result.error_message,
-                raw_response_excerpt=result.raw_response_excerpt,
-                network_route=route_label,
-                tested_at=utc_now(),
-            )
-        except Exception as exc:
-            detail = sanitize_proxy_error(exc) if proxy_url else str(exc)
-            test = ConnectivityTest(
-                provider_id=provider.id,
-                model_id=clean_model_id,
-                client_profile=client_profile,
-                status="failed",
-                latency_ms=None,
-                error_message=detail,
-                raw_response_excerpt="",
-                network_route=route_label,
-                tested_at=utc_now(),
-            )
-
-    db.add(test)
-    db.commit()
-    db.refresh(test)
-    return test
+    return await run_provider_connectivity_test(
+        db,
+        provider,
+        model_id,
+        client_profile,
+        network_route,
+        require_session_fernet(request),
+        trigger_source="manual",
+        connectivity_runner=run_connectivity_test,
+    )
 
 
 @app.post("/providers/{provider_id}/test-preferences")
@@ -1320,6 +1285,403 @@ async def provider_test(
     return redirect(f"/providers/{provider.id}")
 
 
+def scheduled_task_or_404(db: Session, task_id: int) -> ScheduledTask:
+    task = db.scalar(
+        select(ScheduledTask)
+        .where(ScheduledTask.id == task_id)
+        .options(
+            selectinload(ScheduledTask.group),
+            selectinload(ScheduledTask.provider_links),
+            selectinload(ScheduledTask.runs),
+        )
+    )
+    if task is None:
+        raise HTTPException(status_code=404, detail="定时任务不存在。")
+    return task
+
+
+def schedule_page_context(
+    db: Session,
+    *,
+    form_values: dict[str, Any] | None = None,
+    errors: list[str] | None = None,
+) -> dict[str, Any]:
+    tasks = list(
+        db.scalars(
+            select(ScheduledTask)
+            .options(
+                selectinload(ScheduledTask.group),
+                selectinload(ScheduledTask.provider_links),
+                selectinload(ScheduledTask.runs),
+            )
+            .order_by(ScheduledTask.created_at, ScheduledTask.id)
+        ).all()
+    )
+    recent_runs = list(db.scalars(select(ScheduledRun).order_by(ScheduledRun.started_at.desc()).limit(20)).all())
+    providers = list(
+        db.scalars(
+            select(Provider)
+            .where(Provider.archived_at.is_(None))
+            .order_by(Provider.name)
+        ).all()
+    )
+    return {
+        "tasks": tasks,
+        "recent_runs": recent_runs,
+        "providers": providers,
+        "groups": all_provider_groups(db),
+        "vault_state": scheduler_vault_state(),
+        "task_target_summary": task_target_summary,
+        "task_schedule_summary": task_schedule_summary,
+        "task_is_running": task_is_running,
+        "form_values": form_values or {},
+        "errors": errors or [],
+        "app_timezone": settings.app_timezone,
+    }
+
+
+def parse_schedule_form(
+    db: Session,
+    *,
+    name: str,
+    target_type: str,
+    group_id: str,
+    provider_ids: list[int] | None,
+    schedule_kind: str,
+    interval_minutes: str,
+    daily_time: str,
+) -> tuple[dict[str, Any], list[str], list[Provider]]:
+    errors: list[str] = []
+    clean_provider_ids = list(dict.fromkeys(provider_ids or []))
+    try:
+        parsed_group_id = int(group_id) if group_id.strip() else None
+    except ValueError:
+        parsed_group_id = None
+        errors.append("分组无效。")
+    try:
+        parsed_interval = int(interval_minutes) if interval_minutes.strip() else None
+    except ValueError:
+        parsed_interval = None
+        errors.append("间隔必须是整数分钟。")
+    values = {
+        "name": name.strip(),
+        "target_type": target_type,
+        "group_id": parsed_group_id,
+        "provider_ids": clean_provider_ids,
+        "schedule_kind": schedule_kind,
+        "interval_minutes": parsed_interval,
+        "daily_time": daily_time.strip(),
+    }
+    errors.extend(validate_schedule_values(**values))
+    if target_type == "group" and parsed_group_id is not None and db.get(ProviderGroup, parsed_group_id) is None:
+        errors.append("所选分组不存在。")
+    selected_providers = list(
+        db.scalars(select(Provider).where(Provider.id.in_(clean_provider_ids)).order_by(Provider.name)).all()
+    ) if clean_provider_ids else []
+    if target_type == "providers" and len(selected_providers) != len(clean_provider_ids):
+        errors.append("部分所选中转站不存在。")
+    return values, errors, selected_providers
+
+
+def apply_schedule_values(
+    task: ScheduledTask,
+    values: dict[str, Any],
+    selected_providers: list[Provider],
+    *,
+    enabled: bool,
+) -> None:
+    task.name = values["name"]
+    task.target_type = values["target_type"]
+    task.group_id = values["group_id"] if values["target_type"] == "group" else None
+    task.schedule_kind = values["schedule_kind"]
+    task.interval_minutes = values["interval_minutes"] if values["schedule_kind"] == "interval" else None
+    task.daily_time = values["daily_time"] if values["schedule_kind"] == "daily" else None
+    task.timezone_name = settings.app_timezone
+    task.enabled = enabled
+    set_task_provider_links(task, selected_providers if values["target_type"] == "providers" else [])
+    task.next_run_at = calculate_next_run(task) if enabled else None
+
+
+@app.get("/schedules", response_class=HTMLResponse)
+def schedules_page(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    return render(request, "schedules.html", schedule_page_context(db))
+
+
+@app.post("/schedules/authorize")
+def schedules_authorize(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    password: Annotated[str, Form()],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    if not settings.session_secret_configured:
+        flash(request, "必须在 .env 中显式设置稳定的 SESSION_SECRET 后才能启用后台任务。", "error")
+        return redirect("/schedules")
+    if not password or not authenticate(db, password) or not check_session_password_proof(request, db, password):
+        flash(request, "密码确认失败，后台密钥未授权。", "error")
+        return redirect("/schedules")
+    authorize_scheduler_vault(db, password, settings.session_secret)
+    for task in db.scalars(select(ScheduledTask).where(ScheduledTask.enabled.is_(True))).all():
+        if task.next_run_at is None:
+            task.next_run_at = calculate_next_run(task)
+    db.commit()
+    flash(request, "后台密钥已授权，定时任务可在应用重启后继续运行。")
+    return redirect("/schedules")
+
+
+@app.post("/schedules/lock")
+def schedules_lock(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    clear_scheduler_vault(db)
+    for task in db.scalars(select(ScheduledTask)).all():
+        task.enabled = False
+        task.next_run_at = None
+    db.commit()
+    flash(request, "后台密钥已锁定，所有定时任务已停用。")
+    return redirect("/schedules")
+
+
+@app.post("/schedules")
+def schedule_create(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    name: Annotated[str, Form()] = "",
+    target_type: Annotated[str, Form()] = "all",
+    group_id: Annotated[str, Form()] = "",
+    provider_ids: Annotated[list[int] | None, Form()] = None,
+    schedule_kind: Annotated[str, Form()] = "interval",
+    interval_minutes: Annotated[str, Form()] = "60",
+    daily_time: Annotated[str, Form()] = "09:00",
+    enabled: Annotated[str | None, Form()] = None,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    values, errors, selected_providers = parse_schedule_form(
+        db,
+        name=name,
+        target_type=target_type,
+        group_id=group_id,
+        provider_ids=provider_ids,
+        schedule_kind=schedule_kind,
+        interval_minutes=interval_minutes,
+        daily_time=daily_time,
+    )
+    should_enable = enabled == "on"
+    if should_enable and scheduler_vault_state() != "ready":
+        errors.append("请先授权后台密钥，再启用任务。")
+    if errors:
+        return render(
+            request,
+            "schedules.html",
+            schedule_page_context(db, form_values={**values, "enabled": should_enable}, errors=errors),
+            400,
+        )
+    task = ScheduledTask()
+    apply_schedule_values(task, values, selected_providers, enabled=should_enable)
+    db.add(task)
+    db.commit()
+    flash(request, f"定时任务“{task.name}”已创建。")
+    return redirect("/schedules")
+
+
+@app.get("/schedules/{task_id}/edit", response_class=HTMLResponse)
+def schedule_edit_page(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    task_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    task = scheduled_task_or_404(db, task_id)
+    return render(
+        request,
+        "schedule_form.html",
+        {
+            "task": task,
+            "providers": list(db.scalars(select(Provider).where(Provider.archived_at.is_(None)).order_by(Provider.name)).all()),
+            "groups": all_provider_groups(db),
+            "errors": [],
+            "app_timezone": settings.app_timezone,
+        },
+    )
+
+
+@app.post("/schedules/{task_id}")
+def schedule_update(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    task_id: int,
+    name: Annotated[str, Form()] = "",
+    target_type: Annotated[str, Form()] = "all",
+    group_id: Annotated[str, Form()] = "",
+    provider_ids: Annotated[list[int] | None, Form()] = None,
+    schedule_kind: Annotated[str, Form()] = "interval",
+    interval_minutes: Annotated[str, Form()] = "60",
+    daily_time: Annotated[str, Form()] = "09:00",
+    enabled: Annotated[str | None, Form()] = None,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    task = scheduled_task_or_404(db, task_id)
+    values, errors, selected_providers = parse_schedule_form(
+        db,
+        name=name,
+        target_type=target_type,
+        group_id=group_id,
+        provider_ids=provider_ids,
+        schedule_kind=schedule_kind,
+        interval_minutes=interval_minutes,
+        daily_time=daily_time,
+    )
+    should_enable = enabled == "on"
+    if should_enable and scheduler_vault_state() != "ready":
+        errors.append("请先授权后台密钥，再启用任务。")
+    if errors:
+        return render(
+            request,
+            "schedule_form.html",
+            {
+                "task": task,
+                "providers": list(db.scalars(select(Provider).where(Provider.archived_at.is_(None)).order_by(Provider.name)).all()),
+                "groups": all_provider_groups(db),
+                "errors": errors,
+                "form_values": {**values, "enabled": should_enable},
+                "app_timezone": settings.app_timezone,
+            },
+            400,
+        )
+    apply_schedule_values(task, values, selected_providers, enabled=should_enable)
+    db.commit()
+    flash(request, f"定时任务“{task.name}”已更新。")
+    return redirect("/schedules")
+
+
+@app.post("/schedules/{task_id}/toggle")
+def schedule_toggle(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    task_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    task = scheduled_task_or_404(db, task_id)
+    if not task.enabled and scheduler_vault_state() != "ready":
+        flash(request, "后台密钥尚未授权或已锁定，不能启用任务。", "error")
+        return redirect("/schedules")
+    task.enabled = not task.enabled
+    task.next_run_at = calculate_next_run(task) if task.enabled else None
+    db.commit()
+    flash(request, f"定时任务“{task.name}”已{'启用' if task.enabled else '停用'}。")
+    return redirect("/schedules")
+
+
+@app.post("/schedules/{task_id}/run")
+async def schedule_run_now(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    task_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    task = scheduled_task_or_404(db, task_id)
+    fernet = get_scheduler_fernet(db, settings.session_secret) or require_session_fernet(request)
+    if enqueue_task_run(task.id, trigger="manual", fernet=fernet):
+        flash(request, f"定时任务“{task.name}”已开始立即运行。")
+    else:
+        flash(request, f"定时任务“{task.name}”正在运行，请稍后再试。", "error")
+    return redirect("/schedules")
+
+
+@app.post("/schedules/{task_id}/delete")
+def schedule_delete(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    task_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    task = scheduled_task_or_404(db, task_id)
+    if task_is_running(task.id):
+        flash(request, "任务正在运行，不能删除。", "error")
+        return redirect("/schedules")
+    name = task.name
+    db.execute(update(ScheduledRun).where(ScheduledRun.task_id == task.id).values(task_id=None))
+    db.delete(task)
+    db.commit()
+    flash(request, f"定时任务“{name}”已删除，历史测试记录已保留。")
+    return redirect("/schedules")
+
+
+@app.get("/statistics", response_class=HTMLResponse)
+def statistics_page(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    range_key: Annotated[str, Query(alias="range")] = "7d",
+    provider_id: str = "all",
+    source: str = "all",
+    mode: str = "real",
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    if range_key not in VALID_RANGES:
+        range_key = "7d"
+    if source not in VALID_SOURCES:
+        source = "all"
+    if mode not in {"real", "demo"}:
+        mode = "real"
+    selected_provider_id: int | None = None
+    if provider_id != "all":
+        try:
+            selected_provider_id = int(provider_id)
+        except ValueError:
+            provider_id = "all"
+
+    providers = list(db.scalars(select(Provider).order_by(Provider.name)).all())
+    if mode == "demo":
+        records = generate_demo_records()
+        demo_provider_ids = {record.provider_id for record in records}
+        if selected_provider_id not in demo_provider_ids:
+            selected_provider_id = None
+            provider_id = "all"
+        records = filter_records(
+            records,
+            range_key=range_key,
+            provider_id=selected_provider_id,
+            source=source,
+        )
+    else:
+        provider_ids = {provider.id for provider in providers}
+        if selected_provider_id not in provider_ids:
+            selected_provider_id = None
+            provider_id = "all"
+        records = load_real_records(
+            db,
+            range_key=range_key,
+            provider_id=selected_provider_id,
+            source=source,
+        )
+    statistics = build_statistics(records, range_key=range_key)
+    chart_data_json = json.dumps(statistics["chart_data"], ensure_ascii=False).replace("</", "<\\/")
+    return render(
+        request,
+        "statistics.html",
+        {
+            **statistics,
+            "chart_data_json": chart_data_json,
+            "provider_options": providers,
+            "provider_rows": statistics["providers"],
+            "filters": {
+                "range": range_key,
+                "provider_id": provider_id,
+                "source": source,
+                "mode": mode,
+            },
+            "is_demo": mode == "demo",
+            "timezone_name": settings.app_timezone,
+        },
+    )
+
+
 @app.get("/import-export", response_class=HTMLResponse)
 def import_export_page(
     request: Request,
@@ -1354,13 +1716,22 @@ def export_json(
         )
         .order_by(Provider.name)
     ).all()
+    scheduled_tasks = db.scalars(
+        select(ScheduledTask)
+        .options(
+            selectinload(ScheduledTask.group),
+            selectinload(ScheduledTask.provider_links),
+        )
+        .order_by(ScheduledTask.name)
+    ).all()
     payload = {
-        "version": 5,
+        "version": 6,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "contains_secrets": include_secret_values,
         "groups": [],
         "proxies": [],
         "providers": [],
+        "schedules": [],
     }
     for group in all_provider_groups(db):
         payload["groups"].append({"name": group.name, "created_at": group.created_at.isoformat()})
@@ -1372,6 +1743,23 @@ def export_json(
         api_key = decrypt_api_key_with_fernet(provider.encrypted_api_key, fernet) if include_secret_values else None
         exported_route = serialize_test_network_route(db, provider.test_network_route or "default")
         payload["providers"].append(serialize_provider(provider, include_secret_values, api_key, exported_route))
+    for task in scheduled_tasks:
+        payload["schedules"].append(
+            {
+                "name": task.name,
+                "enabled": task.enabled,
+                "target_type": task.target_type,
+                "group": task.group.name if task.group else None,
+                "providers": [
+                    {"name": link.provider_name_snapshot, "base_url": link.provider_base_url_snapshot}
+                    for link in task.provider_links
+                ],
+                "schedule_kind": task.schedule_kind,
+                "interval_minutes": task.interval_minutes,
+                "daily_time": task.daily_time,
+                "timezone": task.timezone_name,
+            }
+        )
 
     content = json.dumps(payload, ensure_ascii=False, indent=2)
     return Response(
@@ -1398,6 +1786,7 @@ async def import_json(
     providers = payload.get("providers") if isinstance(payload, dict) else None
     proxies = payload.get("proxies", []) if isinstance(payload, dict) else None
     groups = payload.get("groups", []) if isinstance(payload, dict) else None
+    schedules = payload.get("schedules", []) if isinstance(payload, dict) else None
     if not isinstance(providers, list):
         flash(request, "导入失败：JSON 必须包含 providers 数组。", "error")
         return redirect("/import-export")
@@ -1407,6 +1796,9 @@ async def import_json(
     if not isinstance(groups, list):
         flash(request, "导入失败：groups 必须是数组。", "error")
         return redirect("/import-export")
+    if not isinstance(schedules, list):
+        flash(request, "导入失败：schedules 必须是数组。", "error")
+        return redirect("/import-export")
 
     fernet = require_session_fernet(request)
     created = 0
@@ -1414,6 +1806,8 @@ async def import_json(
     proxy_created = 0
     proxy_updated = 0
     group_created = 0
+    schedule_created = 0
+    schedule_updated = 0
     errors: list[str] = []
     for index, item in enumerate(groups, start=1):
         if not isinstance(item, dict):
@@ -1592,12 +1986,83 @@ async def import_json(
         if model_count:
             provider.updated_at = utc_now()
 
+    db.flush()
+    for index, item in enumerate(schedules, start=1):
+        if not isinstance(item, dict):
+            errors.append(f"定时任务第 {index} 条：任务必须是对象。")
+            continue
+        task_name = str(item.get("name") or "").strip()
+        target_type = str(item.get("target_type") or "all").strip()
+        schedule_kind = str(item.get("schedule_kind") or "interval").strip()
+        interval_value = item.get("interval_minutes")
+        try:
+            interval_minutes = int(interval_value) if interval_value not in (None, "") else None
+        except (TypeError, ValueError):
+            interval_minutes = None
+        daily_time = str(item.get("daily_time") or "").strip() or None
+        task_group: ProviderGroup | None = None
+        if target_type == "group":
+            group_name = str(item.get("group") or "").strip()
+            task_group = db.scalar(
+                select(ProviderGroup).where(ProviderGroup.normalized_name == group_name.casefold())
+            )
+            if task_group is None:
+                errors.append(f"定时任务第 {index} 条：找不到分组“{group_name}”。")
+                continue
+        selected_providers: list[Provider] = []
+        if target_type == "providers":
+            raw_targets = item.get("providers", [])
+            if not isinstance(raw_targets, list):
+                errors.append(f"定时任务第 {index} 条：providers 必须是数组。")
+                continue
+            for target in raw_targets:
+                if not isinstance(target, dict):
+                    continue
+                target_name = str(target.get("name") or "").strip()
+                target_url = normalize_base_url(str(target.get("base_url") or ""))
+                provider = db.scalar(
+                    select(Provider).where(Provider.name == target_name, Provider.base_url == target_url)
+                )
+                if provider is not None:
+                    selected_providers.append(provider)
+            if not selected_providers:
+                errors.append(f"定时任务第 {index} 条：没有找到可映射的指定中转站。")
+                continue
+        task_errors = validate_schedule_values(
+            name=task_name,
+            target_type=target_type,
+            group_id=task_group.id if task_group else None,
+            provider_ids=[provider.id for provider in selected_providers],
+            schedule_kind=schedule_kind,
+            interval_minutes=interval_minutes,
+            daily_time=daily_time,
+        )
+        if task_errors:
+            errors.append(f"定时任务第 {index} 条：{' '.join(task_errors)}")
+            continue
+        task = db.scalar(select(ScheduledTask).where(ScheduledTask.name == task_name))
+        if task is None:
+            task = ScheduledTask()
+            db.add(task)
+            schedule_created += 1
+        else:
+            schedule_updated += 1
+        values = {
+            "name": task_name,
+            "target_type": target_type,
+            "group_id": task_group.id if task_group else None,
+            "schedule_kind": schedule_kind,
+            "interval_minutes": interval_minutes,
+            "daily_time": daily_time,
+        }
+        apply_schedule_values(task, values, selected_providers, enabled=False)
+
     for group in all_provider_groups(db):
         delete_group_if_empty(db, group.id)
     db.commit()
     message = (
         f"导入完成：分组新增 {group_created} 个；代理新增 {proxy_created} 个、更新 {proxy_updated} 个；"
-        f"中转站新增 {created} 个、更新 {updated} 个"
+        f"中转站新增 {created} 个、更新 {updated} 个；定时任务新增 {schedule_created} 个、更新 {schedule_updated} 个（均已停用）"
     )
     if errors:
         message += f"，{len(errors)} 个错误。" + " ".join(errors[:5])

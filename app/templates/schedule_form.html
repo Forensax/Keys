@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}编辑定时任务 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="section-head"><div><h1>编辑定时任务</h1><p class="muted">{{ task.name }}</p></div><a class="button" href="/schedules">返回定时任务</a></section>
+<section class="panel">
+  {% if errors %}<div class="flash error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% endif %}
+  {% set values = form_values if form_values is defined else {} %}
+  {% set selected_target = values.get('target_type', task.target_type) %}
+  {% set selected_kind = values.get('schedule_kind', task.schedule_kind) %}
+  {% set linked_ids = task.provider_links|map(attribute='provider_id')|list %}
+  {% set selected_provider_ids = values.get('provider_ids', linked_ids) %}
+  <form method="post" action="/schedules/{{ task.id }}" class="form-grid schedule-form" data-schedule-form>
+    <label>任务名称<input name="name" maxlength="160" required value="{{ values.get('name', task.name) }}"></label>
+    <label>目标类型<select name="target_type" data-schedule-target>
+      <option value="all" {% if selected_target == 'all' %}selected{% endif %}>全部已启用中转站</option>
+      <option value="group" {% if selected_target == 'group' %}selected{% endif %}>指定分组</option>
+      <option value="providers" {% if selected_target == 'providers' %}selected{% endif %}>指定中转站</option>
+    </select></label>
+    <label data-schedule-group>分组<select name="group_id"><option value="">请选择</option>{% for group in groups %}<option value="{{ group.id }}" {% if values.get('group_id', task.group_id) == group.id %}selected{% endif %}>{{ group.name }}</option>{% endfor %}</select></label>
+    <label class="full-span" data-schedule-providers>中转站<select name="provider_ids" multiple size="8">{% for provider in providers %}<option value="{{ provider.id }}" {% if provider.id in selected_provider_ids %}selected{% endif %}>{{ provider.name }} · {{ provider.base_url }}</option>{% endfor %}</select></label>
+    <label>调度类型<select name="schedule_kind" data-schedule-kind><option value="interval" {% if selected_kind == 'interval' %}selected{% endif %}>按间隔运行</option><option value="daily" {% if selected_kind == 'daily' %}selected{% endif %}>每天固定时间</option></select></label>
+    <label data-schedule-interval>间隔（分钟）<input type="number" name="interval_minutes" min="15" max="10080" value="{{ values.get('interval_minutes', task.interval_minutes or 60) }}"></label>
+    <label data-schedule-daily>每天时间（{{ app_timezone }}）<input type="time" name="daily_time" value="{{ values.get('daily_time', task.daily_time or '09:00') }}"></label>
+    <label class="checkbox-row"><input type="checkbox" name="enabled" {% if values.get('enabled', task.enabled) %}checked{% endif %}>启用任务</label>
+    <div class="form-actions full-span"><a class="button" href="/schedules">取消</a><button class="primary" type="submit">保存任务</button></div>
+  </form>
+</section>
+{% endblock %}
