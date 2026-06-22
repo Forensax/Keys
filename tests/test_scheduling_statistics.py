@@ -165,11 +165,36 @@ def test_statistics_summary_and_percentile_use_real_records() -> None:
     assert stats["summary"]["failed"] == 1
     assert stats["summary"]["average_latency"] == 200
     assert len(stats["providers"]) == 2
+    assert [row["name"] for row in stats["providers"]] == ["P2", "P1"]
     assert len(stats["latency_series"]) == 2
     assert stats["failures"] == [{"reason": "HTTP 500", "count": 1}]
     assert stats["sources"]["manual"] == 1
     assert stats["sources"]["scheduled"] == 2
     assert percentile_95([10, 20, 30, 40, 50]) == 50
+
+
+def test_statistics_provider_ranking_uses_success_rate_then_volume_then_name() -> None:
+    now = datetime(2026, 6, 22, 12, 0, tzinfo=timezone.utc)
+    records = [
+        StatRecord(now - timedelta(minutes=12), 1, "Beta", "success", 100, "", "manual"),
+        StatRecord(now - timedelta(minutes=11), 1, "Beta", "failed", 100, "boom", "manual"),
+        StatRecord(now - timedelta(minutes=10), 2, "Alpha", "success", 100, "", "manual"),
+        StatRecord(now - timedelta(minutes=9), 2, "Alpha", "failed", 100, "boom", "manual"),
+        StatRecord(now - timedelta(minutes=8), 2, "Alpha", "success", 100, "", "manual"),
+        StatRecord(now - timedelta(minutes=7), 3, "Gamma", "success", 100, "", "manual"),
+        StatRecord(now - timedelta(minutes=6), 4, "Delta", "success", 100, "", "manual"),
+        StatRecord(now - timedelta(minutes=5), 4, "Delta", "failed", 100, "boom", "manual"),
+        StatRecord(now - timedelta(minutes=4), 4, "Delta", "success", 100, "", "manual"),
+        StatRecord(now - timedelta(minutes=3), 4, "Delta", "failed", 100, "boom", "manual"),
+        StatRecord(now - timedelta(minutes=2), 5, "Omega", "success", 100, "", "manual"),
+        StatRecord(now - timedelta(minutes=1), 5, "Omega", "failed", 100, "boom", "manual"),
+    ]
+
+    stats = build_statistics(records, range_key="7d")
+
+    assert [row["name"] for row in stats["providers"]] == ["Gamma", "Alpha", "Delta", "Beta", "Omega"]
+    assert [row["success_rate"] for row in stats["providers"]] == [100.0, 66.7, 50.0, 50.0, 50.0]
+    assert [series["name"] for series in stats["latency_series"]] == ["Delta", "Alpha", "Beta", "Omega", "Gamma"]
 
 
 def test_schedule_and_statistics_pages_use_real_history_only() -> None:
@@ -207,6 +232,37 @@ def test_schedule_and_statistics_pages_use_real_history_only() -> None:
     assert "当前筛选范围内没有测试历史" in legacy_demo_url.text
     with SessionLocal() as db:
         assert len(db.scalars(select(ConnectivityTest)).all()) == before
+    client.close()
+
+
+def test_statistics_page_describes_provider_ranking_by_success_rate() -> None:
+    reset_db()
+    client = setup_client()
+    with SessionLocal() as db:
+        provider = Provider(
+            name="Relay",
+            base_url="https://relay.example/v1",
+            encrypted_api_key="encrypted",
+            key_hint="...",
+            enabled=True,
+        )
+        db.add(provider)
+        db.flush()
+        db.add(
+            ConnectivityTest(
+                provider_id=provider.id,
+                model_id="gpt-test",
+                status="success",
+                latency_ms=100,
+            )
+        )
+        db.commit()
+
+    statistics = client.get("/statistics")
+
+    assert statistics.status_code == 200
+    assert "按成功率降序" in statistics.text
+    assert "按测试次数降序" not in statistics.text
     client.close()
 
 

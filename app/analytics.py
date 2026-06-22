@@ -146,10 +146,14 @@ def build_statistics(records: list[StatRecord], *, range_key: str) -> dict:
                 "latest_at": latest.tested_at,
             }
         )
-    provider_rows.sort(key=lambda item: (-item["total"], item["name"]))
+    provider_rows.sort(key=lambda item: (-item["success_rate"], -item["total"], item["name"]))
+    top_provider_rows_by_volume = sorted(
+        provider_rows,
+        key=lambda item: (-item["total"], item["name"]),
+    )[:5]
     top_keys = [
         (row["provider_id"], row["name"])
-        for row in provider_rows[:5]
+        for row in top_provider_rows_by_volume
     ]
     latency_series = []
     all_labels = [item["label"] for item in trend]
