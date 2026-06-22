@@ -125,6 +125,37 @@ docker compose build --pull
 docker compose up -d
 ```
 
+### 群晖快速重建
+
+如果 `Z:\Keys` 是映射到群晖的 Docker 项目目录，可以用 SSH 一条命令代替 Container Manager 里的“清除项目 / 移除未使用镜像 / 重新构建项目”。先在 DSM 控制面板开启 SSH，并确认项目在群晖里的真实 Linux 路径，例如 `/volume1/docker/Keys`。
+
+```powershell
+cd F:\Project\Keys
+.\scripts\synology-redeploy.ps1 -NasHost 192.168.1.10 -NasUser admin -RemotePath /volume1/docker/Keys -UseSudo
+```
+
+如果你选择把 SSH 密码保存为本地文件，可以放在默认路径：
+
+```powershell
+C:\Users\<你的用户名>\.ssh\keys-nas.password
+```
+
+脚本检测到该文件后会自动使用密码登录 SSH；如果同时传入 `-UseSudo`，也会用同一个密码响应群晖上的 `sudo`。也可以通过 `-PasswordFile <路径>` 指定其他密码文件。
+
+脚本在群晖上执行的流程等价于：
+
+```sh
+docker compose down --remove-orphans
+docker compose build --pull --no-cache
+docker compose up -d --force-recreate --remove-orphans
+docker image prune -f
+docker compose ps
+```
+
+默认不会删除卷，也不会执行 `docker system prune -a`，所以不会清除 `data/keys.db`。如果你的群晖账号已经有 Docker 权限，可以去掉 `-UseSudo`；如果想保留构建缓存来加速，可加 `-UseBuildCache`。
+
+脚本默认只清理悬空镜像。若确认要清理所有未被容器使用的镜像，可加 `-PruneAllUnusedImages`，对应 `docker image prune -af`。
+
 容器内的 SQLite 数据库固定为 `/app/data/keys.db`，并通过 `./data:/app/data` 保存到宿主机，因此重建容器不会删除中转站数据。备份时复制宿主机的 `data/keys.db` 即可。
 
 Compose 默认通过 `0.0.0.0:18000` 向所有网络接口开放服务。只允许本机访问时，在 `.env` 中设置：
