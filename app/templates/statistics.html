@@ -22,7 +22,7 @@
   </label>
   <label>中转站
     <select name="provider_id">
-      <option value="all">全部中转站</option>
+      <option value="all" {% if filters.provider_id == 'all' %}selected{% endif %}>全部中转站</option>
       {% for provider in provider_options %}<option value="{{ provider.id }}" {% if filters.provider_id == provider.id|string %}selected{% endif %}>{{ provider.name }}</option>{% endfor %}
     </select>
   </label>

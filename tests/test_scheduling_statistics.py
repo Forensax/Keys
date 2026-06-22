@@ -266,6 +266,77 @@ def test_statistics_page_describes_provider_ranking_by_success_rate() -> None:
     client.close()
 
 
+def test_statistics_filter_preferences_save_restore_and_repair() -> None:
+    reset_db()
+    client = setup_client()
+    with SessionLocal() as db:
+        provider = Provider(
+            name="Relay",
+            base_url="https://relay.example/v1",
+            encrypted_api_key="encrypted",
+            key_hint="...",
+            enabled=True,
+        )
+        db.add(provider)
+        db.commit()
+        provider_id = provider.id
+
+    default_page = client.get("/statistics")
+    assert default_page.status_code == 200
+    assert 'value="7d" selected' in default_page.text
+    assert 'value="all" selected>全部中转站' in default_page.text
+    assert 'value="all" selected>全部来源' in default_page.text
+    with SessionLocal() as db:
+        assert get_setting(db, "statistics_filter_preferences") is None
+
+    demo_only_page = client.get("/statistics?mode=demo")
+    assert demo_only_page.status_code == 200
+    assert "演示数据" not in demo_only_page.text
+    with SessionLocal() as db:
+        assert get_setting(db, "statistics_filter_preferences") is None
+
+    saved_page = client.get("/statistics?range=30d&provider_id=all&source=scheduled")
+    assert saved_page.status_code == 200
+    assert 'value="30d" selected' in saved_page.text
+    assert 'value="scheduled" selected' in saved_page.text
+    with SessionLocal() as db:
+        assert json.loads(get_setting(db, "statistics_filter_preferences") or "{}") == {
+            "range": "30d",
+            "provider_id": "all",
+            "source": "scheduled",
+        }
+
+    restored_page = client.get("/statistics")
+    assert restored_page.status_code == 200
+    assert 'value="30d" selected' in restored_page.text
+    assert 'value="scheduled" selected' in restored_page.text
+
+    provider_page = client.get(f"/statistics?range=90d&provider_id={provider_id}&source=manual")
+    assert provider_page.status_code == 200
+    assert f'value="{provider_id}" selected' in provider_page.text
+    with SessionLocal() as db:
+        assert json.loads(get_setting(db, "statistics_filter_preferences") or "{}") == {
+            "range": "90d",
+            "provider_id": str(provider_id),
+            "source": "manual",
+        }
+        db.delete(db.get(Provider, provider_id))
+        db.commit()
+
+    repaired_page = client.get("/statistics")
+    assert repaired_page.status_code == 200
+    assert 'value="90d" selected' in repaired_page.text
+    assert 'value="all" selected>全部中转站' in repaired_page.text
+    assert 'value="manual" selected' in repaired_page.text
+    with SessionLocal() as db:
+        assert json.loads(get_setting(db, "statistics_filter_preferences") or "{}") == {
+            "range": "90d",
+            "provider_id": "all",
+            "source": "manual",
+        }
+    client.close()
+
+
 def test_backup_v6_round_trips_schedule_definitions_as_disabled() -> None:
     reset_db()
     client = setup_client()

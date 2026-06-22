@@ -54,6 +54,7 @@ from .security import (
     encrypt_api_key_with_fernet,
     encrypt_secret_with_fernet,
     get_scheduler_fernet,
+    get_setting,
     is_authenticated,
     is_initialized,
     key_hint,
@@ -61,6 +62,7 @@ from .security import (
     logout_session,
     require_session_fernet,
     setup_application,
+    set_setting,
 )
 from .proxy_support import (
     VALID_PROXY_SCHEMES,
@@ -87,6 +89,9 @@ from .test_runner import (
     run_provider_connectivity_test,
 )
 
+
+SETTING_STATISTICS_FILTER_PREFERENCES = "statistics_filter_preferences"
+DEFAULT_STATISTICS_FILTERS = {"range": "7d", "provider_id": "all", "source": "all"}
 
 
 @asynccontextmanager
@@ -153,6 +158,54 @@ def format_local_datetime(value: datetime | None) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(ZoneInfo(settings.app_timezone)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def read_statistics_filter_preferences(db: Session) -> tuple[dict[str, str], bool]:
+    stored = get_setting(db, SETTING_STATISTICS_FILTER_PREFERENCES)
+    if not stored:
+        return DEFAULT_STATISTICS_FILTERS.copy(), False
+    try:
+        payload = json.loads(stored)
+    except json.JSONDecodeError:
+        return DEFAULT_STATISTICS_FILTERS.copy(), True
+    if not isinstance(payload, dict):
+        return DEFAULT_STATISTICS_FILTERS.copy(), True
+    return {
+        "range": str(payload.get("range", DEFAULT_STATISTICS_FILTERS["range"])),
+        "provider_id": str(payload.get("provider_id", DEFAULT_STATISTICS_FILTERS["provider_id"])),
+        "source": str(payload.get("source", DEFAULT_STATISTICS_FILTERS["source"])),
+    }, True
+
+
+def write_statistics_filter_preferences(db: Session, filters: dict[str, str]) -> None:
+    set_setting(
+        db,
+        SETTING_STATISTICS_FILTER_PREFERENCES,
+        json.dumps(filters, ensure_ascii=False, sort_keys=True),
+    )
+
+
+def normalize_statistics_filters(
+    *,
+    range_key: str,
+    provider_id: str,
+    source: str,
+    valid_provider_ids: set[int],
+) -> tuple[str, str, str, int | None]:
+    if range_key not in VALID_RANGES:
+        range_key = DEFAULT_STATISTICS_FILTERS["range"]
+    if source not in VALID_SOURCES:
+        source = DEFAULT_STATISTICS_FILTERS["source"]
+    selected_provider_id: int | None = None
+    if provider_id != "all":
+        try:
+            selected_provider_id = int(provider_id)
+        except ValueError:
+            provider_id = DEFAULT_STATISTICS_FILTERS["provider_id"]
+    if selected_provider_id not in valid_provider_ids:
+        selected_provider_id = None
+        provider_id = DEFAULT_STATISTICS_FILTERS["provider_id"]
+    return range_key, provider_id, source, selected_provider_id
 
 
 def flash(request: Request, message: str, level: str = "info") -> None:
@@ -1620,22 +1673,26 @@ def statistics_page(
     source: str = "all",
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
-    if range_key not in VALID_RANGES:
-        range_key = "7d"
-    if source not in VALID_SOURCES:
-        source = "all"
-    selected_provider_id: int | None = None
-    if provider_id != "all":
-        try:
-            selected_provider_id = int(provider_id)
-        except ValueError:
-            provider_id = "all"
-
+    query_has_filter_params = any(name in request.query_params for name in ("range", "provider_id", "source"))
+    stored_filters, has_stored_filters = read_statistics_filter_preferences(db)
+    if not query_has_filter_params:
+        range_key = stored_filters["range"]
+        provider_id = stored_filters["provider_id"]
+        source = stored_filters["source"]
     providers = list(db.scalars(select(Provider).order_by(Provider.name)).all())
     provider_ids = {provider.id for provider in providers}
-    if selected_provider_id not in provider_ids:
-        selected_provider_id = None
-        provider_id = "all"
+    range_key, provider_id, source, selected_provider_id = normalize_statistics_filters(
+        range_key=range_key,
+        provider_id=provider_id,
+        source=source,
+        valid_provider_ids=provider_ids,
+    )
+    normalized_filters = {"range": range_key, "provider_id": provider_id, "source": source}
+    stored_filters_json = get_setting(db, SETTING_STATISTICS_FILTER_PREFERENCES)
+    normalized_filters_json = json.dumps(normalized_filters, ensure_ascii=False, sort_keys=True)
+    if query_has_filter_params or (has_stored_filters and stored_filters_json != normalized_filters_json):
+        write_statistics_filter_preferences(db, normalized_filters)
+        db.commit()
     records = load_real_records(
         db,
         range_key=range_key,
