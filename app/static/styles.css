@@ -974,15 +974,9 @@ tr:last-child td {
   color: var(--warn);
 }
 
-.demo-banner {
-  background: #eef5ff;
-  border-color: #b8d2ef;
-  color: #174e7a;
-}
-
 .statistics-filters {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
   margin-bottom: 18px;
 }
 

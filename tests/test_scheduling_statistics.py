@@ -8,7 +8,7 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, select, text
 
-from app.analytics import build_statistics, filter_records, generate_demo_records, percentile_95
+from app.analytics import StatRecord, build_statistics, percentile_95
 from app.config import settings
 from app.db import Base, SessionLocal, engine, ensure_scheduling_columns
 from app.main import app
@@ -152,27 +152,33 @@ def test_scheduled_run_freezes_targets_and_writes_summary(monkeypatch) -> None:
         assert (run.status, run.total_count, run.success_count, run.failed_count) == ("success", 1, 1, 0)
 
 
-def test_demo_statistics_are_deterministic_filtered_and_complete() -> None:
+def test_statistics_summary_and_percentile_use_real_records() -> None:
     now = datetime(2026, 6, 22, 12, 0, tzinfo=timezone.utc)
-    first = generate_demo_records(now)
-    second = generate_demo_records(now)
-    assert first == second
-    scheduled = filter_records(first, range_key="7d", provider_id=None, source="scheduled", now=now)
-    stats = build_statistics(scheduled, range_key="7d")
-    assert stats["summary"]["total"] == len(scheduled)
-    assert 0 <= stats["summary"]["success_rate"] <= 100
-    assert len(stats["providers"]) == 6
-    assert len(stats["latency_series"]) == 5
-    assert stats["sources"]["manual"] == 0
-    assert stats["sources"]["scheduled"] == len(scheduled)
+    records = [
+        StatRecord(now - timedelta(hours=2), 1, "P1", "success", 100, "", "manual"),
+        StatRecord(now - timedelta(hours=1), 1, "P1", "failed", 300, "HTTP 500\ntrace", "scheduled"),
+        StatRecord(now, 2, "P2", "success", 200, "", "scheduled"),
+    ]
+    stats = build_statistics(records, range_key="7d")
+    assert stats["summary"]["total"] == 3
+    assert stats["summary"]["success_rate"] == 66.7
+    assert stats["summary"]["failed"] == 1
+    assert stats["summary"]["average_latency"] == 200
+    assert len(stats["providers"]) == 2
+    assert len(stats["latency_series"]) == 2
+    assert stats["failures"] == [{"reason": "HTTP 500", "count": 1}]
+    assert stats["sources"]["manual"] == 1
+    assert stats["sources"]["scheduled"] == 2
     assert percentile_95([10, 20, 30, 40, 50]) == 50
 
 
-def test_schedule_and_statistics_pages_and_demo_do_not_write_history() -> None:
+def test_schedule_and_statistics_pages_use_real_history_only() -> None:
     reset_db()
     client = setup_client()
     schedules = client.get("/schedules")
     assert schedules.status_code == 200
+    assert '<a href="/schedules">定时</a>' in schedules.text
+    assert '<a href="/schedules">定时任务</a>' not in schedules.text
     assert "定时任务" in schedules.text
     created = client.post(
         "/schedules",
@@ -188,11 +194,12 @@ def test_schedule_and_statistics_pages_and_demo_do_not_write_history() -> None:
     before = 0
     with SessionLocal() as db:
         before = len(db.scalars(select(ConnectivityTest)).all())
-    demo = client.get("/statistics?range=30d&provider_id=all&source=all&mode=demo")
-    assert demo.status_code == 200
-    assert "演示数据" in demo.text
-    assert "成功与失败趋势" in demo.text
-    assert "data-stat-chart=\"latency\"" in demo.text
+    legacy_demo_url = client.get("/statistics?range=30d&provider_id=all&source=all&mode=demo")
+    assert legacy_demo_url.status_code == 200
+    assert "演示数据" not in legacy_demo_url.text
+    assert "数据模式" not in legacy_demo_url.text
+    assert "查看演示数据" not in legacy_demo_url.text
+    assert "当前筛选范围内没有测试历史" in legacy_demo_url.text
     with SessionLocal() as db:
         assert len(db.scalars(select(ConnectivityTest)).all()) == before
     client.close()

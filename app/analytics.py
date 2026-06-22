@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -94,60 +93,6 @@ def load_real_records(
             source=row.trigger_source or "manual",
         )
         for row in db.execute(query).all()
-    ]
-
-
-def generate_demo_records(now: datetime | None = None) -> list[StatRecord]:
-    rng = random.Random(20260622)
-    current = _aware_utc(now or utc_now()).replace(minute=0, second=0, microsecond=0)
-    providers = [
-        (-1, "示例·星云", 820, 0.96),
-        (-2, "示例·极光", 1250, 0.90),
-        (-3, "示例·风帆", 560, 0.98),
-        (-4, "示例·远山", 2100, 0.83),
-        (-5, "示例·灯塔", 980, 0.93),
-        (-6, "示例·潮汐", 1550, 0.88),
-    ]
-    errors = ["上游请求超时", "HTTP 429: 请求过于频繁", "连接被拒绝", "模型暂时不可用"]
-    records: list[StatRecord] = []
-    for day in range(30):
-        for hour in (1, 7, 13, 19):
-            tested_at = (current - timedelta(days=29 - day)).replace(hour=hour)
-            if tested_at > current:
-                continue
-            for provider_id, name, baseline, success_rate in providers:
-                success = rng.random() <= success_rate
-                latency = max(120, int(rng.gauss(baseline + day * 3, baseline * 0.18)))
-                records.append(
-                    StatRecord(
-                        tested_at=tested_at,
-                        provider_id=provider_id,
-                        provider_name=name,
-                        status="success" if success else "failed",
-                        latency_ms=latency,
-                        error_message="" if success else rng.choice(errors),
-                        source="scheduled" if hour != 13 else "manual",
-                    )
-                )
-    return records
-
-
-def filter_records(
-    records: list[StatRecord],
-    *,
-    range_key: str,
-    provider_id: int | None,
-    source: str,
-    now: datetime | None = None,
-) -> list[StatRecord]:
-    current = _aware_utc(now or utc_now())
-    start = range_start(range_key, current)
-    return [
-        record
-        for record in records
-        if (start is None or record.tested_at >= start)
-        and (provider_id is None or record.provider_id == provider_id)
-        and (source == "all" or record.source == source)
     ]
 
 

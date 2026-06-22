@@ -20,8 +20,6 @@ from .analytics import (
     VALID_RANGES,
     VALID_SOURCES,
     build_statistics,
-    filter_records,
-    generate_demo_records,
     load_real_records,
 )
 from .db import get_db, init_db
@@ -1620,15 +1618,12 @@ def statistics_page(
     range_key: Annotated[str, Query(alias="range")] = "7d",
     provider_id: str = "all",
     source: str = "all",
-    mode: str = "real",
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     if range_key not in VALID_RANGES:
         range_key = "7d"
     if source not in VALID_SOURCES:
         source = "all"
-    if mode not in {"real", "demo"}:
-        mode = "real"
     selected_provider_id: int | None = None
     if provider_id != "all":
         try:
@@ -1637,29 +1632,16 @@ def statistics_page(
             provider_id = "all"
 
     providers = list(db.scalars(select(Provider).order_by(Provider.name)).all())
-    if mode == "demo":
-        records = generate_demo_records()
-        demo_provider_ids = {record.provider_id for record in records}
-        if selected_provider_id not in demo_provider_ids:
-            selected_provider_id = None
-            provider_id = "all"
-        records = filter_records(
-            records,
-            range_key=range_key,
-            provider_id=selected_provider_id,
-            source=source,
-        )
-    else:
-        provider_ids = {provider.id for provider in providers}
-        if selected_provider_id not in provider_ids:
-            selected_provider_id = None
-            provider_id = "all"
-        records = load_real_records(
-            db,
-            range_key=range_key,
-            provider_id=selected_provider_id,
-            source=source,
-        )
+    provider_ids = {provider.id for provider in providers}
+    if selected_provider_id not in provider_ids:
+        selected_provider_id = None
+        provider_id = "all"
+    records = load_real_records(
+        db,
+        range_key=range_key,
+        provider_id=selected_provider_id,
+        source=source,
+    )
     statistics = build_statistics(records, range_key=range_key)
     chart_data_json = json.dumps(statistics["chart_data"], ensure_ascii=False).replace("</", "<\\/")
     return render(
@@ -1674,9 +1656,7 @@ def statistics_page(
                 "range": range_key,
                 "provider_id": provider_id,
                 "source": source,
-                "mode": mode,
             },
-            "is_demo": mode == "demo",
             "timezone_name": settings.app_timezone,
         },
     )

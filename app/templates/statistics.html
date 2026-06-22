@@ -10,10 +10,6 @@
   </div>
 </section>
 
-{% if is_demo %}
-  <div class="flash demo-banner"><strong>演示数据</strong> · 由内存确定性生成，不会写入、修改或删除数据库记录。</div>
-{% endif %}
-
 <form method="get" action="/statistics" class="panel statistics-filters">
   <label>时间范围
     <select name="range">
@@ -25,11 +21,10 @@
     </select>
   </label>
   <label>中转站
-    <select name="provider_id" {% if is_demo %}disabled{% endif %}>
+    <select name="provider_id">
       <option value="all">全部中转站</option>
       {% for provider in provider_options %}<option value="{{ provider.id }}" {% if filters.provider_id == provider.id|string %}selected{% endif %}>{{ provider.name }}</option>{% endfor %}
     </select>
-    {% if is_demo %}<input type="hidden" name="provider_id" value="all">{% endif %}
   </label>
   <label>测试来源
     <select name="source">
@@ -38,20 +33,13 @@
       <option value="scheduled" {% if filters.source == 'scheduled' %}selected{% endif %}>定时任务</option>
     </select>
   </label>
-  <label>数据模式
-    <select name="mode">
-      <option value="real" {% if filters.mode == 'real' %}selected{% endif %}>真实历史</option>
-      <option value="demo" {% if filters.mode == 'demo' %}selected{% endif %}>演示数据</option>
-    </select>
-  </label>
   <button class="primary" type="submit">应用筛选</button>
 </form>
 
 {% if summary.total == 0 %}
   <section class="panel empty-state">
     <h2>当前筛选范围内没有测试历史</h2>
-    <p class="muted">先在首页执行单站测试或“测试全部”，也可以切换到演示数据查看完整统计界面。</p>
-    <a class="button primary" href="/statistics?range=30d&provider_id=all&source=all&mode=demo">查看演示数据</a>
+    <p class="muted">先在首页执行单站测试或“测试全部”，再回到这里查看真实历史统计。</p>
   </section>
 {% else %}
   <section class="metric-grid" aria-label="关键指标">
