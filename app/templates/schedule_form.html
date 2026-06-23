@@ -24,6 +24,23 @@
     <label data-schedule-interval>间隔（分钟）<input type="number" name="interval_minutes" min="15" max="10080" value="{{ values.get('interval_minutes', task.interval_minutes or 60) }}"></label>
     <label data-schedule-daily>每天时间（{{ app_timezone }}）<input type="time" name="daily_time" value="{{ values.get('daily_time', task.daily_time or '09:00') }}"></label>
     <label class="checkbox-row"><input type="checkbox" name="enabled" {% if values.get('enabled', task.enabled) %}checked{% endif %}>启用任务</label>
+    <fieldset class="full-span">
+      <legend>通知设置</legend>
+      <label class="checkbox-row">
+        <input type="checkbox" name="enable_telegram_notification" {% if task.enable_telegram_notification %}checked{% endif %}>
+        启用 Telegram 通知
+      </label>
+      <div style="margin-left: 2em;">
+        <label class="checkbox-row">
+          <input type="checkbox" name="notify_on_success" {% if task.notify_on_success %}checked{% endif %}>
+          中转站恢复可用时通知
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="notify_on_failure" {% if task.notify_on_failure %}checked{% endif %}>
+          中转站连接失败时通知
+        </label>
+      </div>
+    </fieldset>
     <div class="form-actions full-span"><a class="button" href="/schedules">取消</a><button class="primary" type="submit">保存任务</button></div>
   </form>
 </section>

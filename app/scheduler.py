@@ -284,6 +284,15 @@ async def execute_task_run(
             if errors:
                 run.error_message = "；".join(errors[:3])
             db.commit()
+
+            # 检查是否需要发送 Telegram 通知
+            from .notifications import send_telegram_notification, should_notify_for_task
+            task = db.get(ScheduledTask, task_id)
+            if task and task.enable_telegram_notification:
+                for test in tests:
+                    provider = db.get(Provider, test.provider_id)
+                    if provider and should_notify_for_task(task, test.status):
+                        await send_telegram_notification(db, provider, test, fernet)
     finally:
         _running_task_ids.discard(task_id)
 

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}监控配置{% endblock %}
+{% block content %}
+<h1>监控配置</h1>
+
+<section>
+  <h2>Telegram 通知</h2>
+  <form method="post" action="/monitoring/telegram">
+    <label>
+      Bot Token
+      <input type="text" name="bot_token" placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
+             value="{% if has_credentials %}••••••••{% endif %}" required>
+      <small>从 <a href="https://t.me/BotFather" target="_blank">@BotFather</a> 获取</small>
+    </label>
+
+    <label>
+      Chat ID
+      <input type="text" name="chat_id" placeholder="-1001234567890"
+             value="{% if has_credentials %}••••••••{% endif %}" required>
+      <small>发送消息给 <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a> 获取</small>
+    </label>
+
+    <label>
+      网络代理
+      <select name="proxy_id">
+        <option value="">直连</option>
+        {% for proxy in proxies %}
+        <option value="{{ proxy.id }}" {% if proxy.id == telegram_proxy_id %}selected{% endif %}>
+          {{ proxy.name }} ({{ proxy.endpoint }})
+        </option>
+        {% endfor %}
+      </select>
+      <small>如果 Telegram 被墙，可选择代理。没有可用代理？前往<a href="/proxies">代理页面</a>添加</small>
+    </label>
+
+    <label>
+      <input type="checkbox" name="enabled" {% if telegram_enabled %}checked{% endif %}>
+      启用 Telegram 通知
+    </label>
+
+    <div class="button-group">
+      <button type="submit">保存配置</button>
+      {% if has_credentials %}
+      <button type="button" onclick="testTelegram()">发送测试消息</button>
+      {% endif %}
+    </div>
+  </form>
+</section>
+
+<section>
+  <h2>使用说明</h2>
+  <ol>
+    <li>在 Telegram 中找到 <a href="https://t.me/BotFather" target="_blank">@BotFather</a>，创建新 Bot 并获取 Token</li>
+    <li>将 Bot 添加到你的频道或群组</li>
+    <li>发送消息给 <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a> 获取 Chat ID</li>
+    <li>如果 Telegram 被墙，先在"代理"页面配置代理，再选择代理</li>
+    <li>填写上述配置并保存</li>
+    <li>在"定时任务"页面，为需要监控的任务启用通知</li>
+  </ol>
+</section>
+
+<script>
+async function testTelegram() {
+  try {
+    const response = await fetch('/monitoring/telegram/test', { method: 'POST' });
+    const data = await response.json();
+    alert(data.status === 'ok' ? '测试消息已发送！' : '发送失败，请检查配置');
+  } catch (error) {
+    alert('发送失败: ' + error.message);
+  }
+}
+</script>
+{% endblock %}

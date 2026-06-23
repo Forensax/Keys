@@ -1499,18 +1499,21 @@ def schedules_lock(
     return redirect("/schedules")
 
 
-@app.post("/schedules")
+@app.post(“/schedules”)
 def schedule_create(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
-    name: Annotated[str, Form()] = "",
-    target_type: Annotated[str, Form()] = "all",
-    group_id: Annotated[str, Form()] = "",
+    name: Annotated[str, Form()] = “”,
+    target_type: Annotated[str, Form()] = “all”,
+    group_id: Annotated[str, Form()] = “”,
     provider_ids: Annotated[list[int] | None, Form()] = None,
-    schedule_kind: Annotated[str, Form()] = "interval",
-    interval_minutes: Annotated[str, Form()] = "60",
-    daily_time: Annotated[str, Form()] = "09:00",
+    schedule_kind: Annotated[str, Form()] = “interval”,
+    interval_minutes: Annotated[str, Form()] = “60”,
+    daily_time: Annotated[str, Form()] = “09:00”,
     enabled: Annotated[str | None, Form()] = None,
+    enable_telegram_notification: Annotated[str | None, Form()] = None,
+    notify_on_success: Annotated[str | None, Form()] = None,
+    notify_on_failure: Annotated[str | None, Form()] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     values, errors, selected_providers = parse_schedule_form(
@@ -1523,22 +1526,25 @@ def schedule_create(
         interval_minutes=interval_minutes,
         daily_time=daily_time,
     )
-    should_enable = enabled == "on"
-    if should_enable and scheduler_vault_state() != "ready":
-        errors.append("请先授权后台密钥，再启用任务。")
+    should_enable = enabled == “on”
+    if should_enable and scheduler_vault_state() != “ready”:
+        errors.append(“请先授权后台密钥，再启用任务。”)
     if errors:
         return render(
             request,
-            "schedules.html",
-            schedule_page_context(db, form_values={**values, "enabled": should_enable}, errors=errors),
+            “schedules.html”,
+            schedule_page_context(db, form_values={**values, “enabled”: should_enable}, errors=errors),
             400,
         )
     task = ScheduledTask()
     apply_schedule_values(task, values, selected_providers, enabled=should_enable)
+    task.enable_telegram_notification = enable_telegram_notification == “on”
+    task.notify_on_success = notify_on_success == “on”
+    task.notify_on_failure = notify_on_failure == “on”
     db.add(task)
     db.commit()
-    flash(request, f"定时任务“{task.name}”已创建。")
-    return redirect("/schedules")
+    flash(request, f”定时任务”{task.name}”已创建。”)
+    return redirect(“/schedules”)
 
 
 @app.get("/schedules/{task_id}/edit", response_class=HTMLResponse)
@@ -1575,6 +1581,9 @@ def schedule_update(
     interval_minutes: Annotated[str, Form()] = "60",
     daily_time: Annotated[str, Form()] = "09:00",
     enabled: Annotated[str | None, Form()] = None,
+    enable_telegram_notification: Annotated[str | None, Form()] = None,
+    notify_on_success: Annotated[str | None, Form()] = None,
+    notify_on_failure: Annotated[str | None, Form()] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     task = scheduled_task_or_404(db, task_id)
@@ -1606,9 +1615,12 @@ def schedule_update(
             400,
         )
     apply_schedule_values(task, values, selected_providers, enabled=should_enable)
+    task.enable_telegram_notification = enable_telegram_notification == “on”
+    task.notify_on_success = notify_on_success == “on”
+    task.notify_on_failure = notify_on_failure == “on”
     db.commit()
-    flash(request, f"定时任务“{task.name}”已更新。")
-    return redirect("/schedules")
+    flash(request, f”定时任务”{task.name}”已更新。”)
+    return redirect(“/schedules”)
 
 
 @app.post("/schedules/{task_id}/toggle")
@@ -1662,6 +1674,112 @@ def schedule_delete(
     db.commit()
     flash(request, f"定时任务“{name}”已删除，历史测试记录已保留。")
     return redirect("/schedules")
+
+
+@app.get("/monitoring", response_class=HTMLResponse)
+def monitoring_page(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    telegram_enabled = get_setting(db, "telegram_enabled") == "true"
+    has_token = bool(get_setting(db, "telegram_bot_token_encrypted"))
+    has_chat_id = bool(get_setting(db, "telegram_chat_id_encrypted"))
+    telegram_proxy_id_str = get_setting(db, "telegram_proxy_id") or ""
+
+    proxies = db.execute(
+        select(NetworkProxy)
+        .where(NetworkProxy.enabled == True)
+        .order_by(NetworkProxy.name)
+    ).scalars().all()
+
+    return templates.TemplateResponse("monitoring.html", {
+        "request": request,
+        "telegram_enabled": telegram_enabled,
+        "has_credentials": has_token and has_chat_id,
+        "telegram_proxy_id": int(telegram_proxy_id_str) if telegram_proxy_id_str else None,
+        "proxies": proxies
+    })
+
+
+@app.post("/monitoring/telegram")
+def save_telegram_config(
+    request: Request,
+    bot_token: Annotated[str, Form()],
+    chat_id: Annotated[str, Form()],
+    enabled: Annotated[bool, Form()] = False,
+    proxy_id: Annotated[str, Form()] = "",
+    db: Annotated[Session, Depends(get_db)] = None,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    fernet = require_session_fernet(request)
+
+    if bot_token and bot_token != "••••••••":
+        encrypted_token = encrypt_secret_with_fernet(bot_token, fernet)
+        set_setting(db, "telegram_bot_token_encrypted", encrypted_token)
+
+    if chat_id and chat_id != "••••••••":
+        encrypted_chat_id = encrypt_secret_with_fernet(chat_id, fernet)
+        set_setting(db, "telegram_chat_id_encrypted", encrypted_chat_id)
+
+    set_setting(db, "telegram_enabled", "true" if enabled else "false")
+    set_setting(db, "telegram_proxy_id", proxy_id)
+    db.commit()
+
+    flash(request, "Telegram 配置已保存。")
+    return redirect("/monitoring")
+
+
+@app.post("/monitoring/telegram/test")
+async def test_telegram_notification(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    fernet = require_session_fernet(request)
+
+    encrypted_token = get_setting(db, "telegram_bot_token_encrypted")
+    encrypted_chat_id = get_setting(db, "telegram_chat_id_encrypted")
+
+    if not encrypted_token or not encrypted_chat_id:
+        raise HTTPException(400, "请先配置 Telegram 凭据")
+
+    try:
+        bot_token = decrypt_secret_with_fernet(encrypted_token, fernet)
+        chat_id = decrypt_secret_with_fernet(encrypted_chat_id, fernet)
+    except Exception:
+        raise HTTPException(400, "凭据解密失败")
+
+    from .proxy_support import build_proxy_url
+    proxy_id_str = get_setting(db, "telegram_proxy_id")
+    proxies = None
+
+    if proxy_id_str:
+        try:
+            proxy_id = int(proxy_id_str)
+            proxy = db.get(NetworkProxy, proxy_id)
+            if proxy and proxy.enabled:
+                proxy_url = build_proxy_url(proxy, fernet)
+                proxies = {"all://": proxy_url}
+        except Exception:
+            pass
+
+    async with httpx.AsyncClient(
+        timeout=10.0,
+        proxies=proxies,
+        trust_env=False
+    ) as client:
+        response = await client.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": "🔔 Keys 监控系统测试消息",
+                "parse_mode": "HTML"
+            }
+        )
+        response.raise_for_status()
+
+    return JSONResponse({"status": "ok", "message": "测试消息已发送"})
 
 
 @app.get("/statistics", response_class=HTMLResponse)
