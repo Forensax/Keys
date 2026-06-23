@@ -344,6 +344,7 @@
     const providerId = preferenceForm.dataset.providerId;
     const status = preferenceForm.querySelector("[data-preference-save-status]");
     const modelInput = preferenceForm.querySelector('[name="model_id"]');
+    const clientProfileSelect = preferenceForm.querySelector('[name="client_profile"]');
     const modelFillRows = Array.from(document.querySelectorAll("[data-model-fill]"));
     let modelSaveTimer = null;
     let preferenceSaveQueue = Promise.resolve();
@@ -356,6 +357,17 @@
         row.classList.toggle("is-selected", selected);
         row.setAttribute("aria-pressed", selected ? "true" : "false");
       });
+    }
+
+    function inferClientProfileFromModel(modelName) {
+      const normalized = modelName.toLowerCase();
+      if (normalized.includes("gpt")) {
+        return "codex";
+      }
+      if (normalized.includes("claude")) {
+        return "claude_code";
+      }
+      return null;
     }
 
     function savePreference(values) {
@@ -379,7 +391,7 @@
       return operation;
     }
 
-    preferenceForm.querySelector('[name="client_profile"]').addEventListener("change", (event) => {
+    clientProfileSelect.addEventListener("change", (event) => {
       savePreference({ client_profile: event.target.value });
     });
     preferenceForm.querySelector('[name="network_route"]').addEventListener("change", (event) => {
@@ -387,8 +399,14 @@
     });
     modelFillRows.forEach((row) => {
       row.addEventListener("click", () => {
-        modelInput.value = row.dataset.modelValue;
-        syncSelectedModel(modelInput.value);
+        const modelValue = row.dataset.modelValue;
+        modelInput.value = modelValue;
+        syncSelectedModel(modelValue);
+        const inferredClientProfile = inferClientProfileFromModel(modelValue);
+        if (inferredClientProfile && clientProfileSelect.value !== inferredClientProfile) {
+          clientProfileSelect.value = inferredClientProfile;
+          clientProfileSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        }
         modelInput.dispatchEvent(new Event("change", { bubbles: true }));
       });
     });

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 from fastapi.testclient import TestClient  # noqa: E402
@@ -29,6 +30,9 @@ from app.openai_compat import (  # noqa: E402
     ModelInfo,
 )
 from app.proxy_support import ProxyTestResult  # noqa: E402
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def reset_db() -> None:
@@ -550,6 +554,8 @@ def test_detail_model_rows_fill_test_model_and_archive_stays_read_only() -> None
     detail = client.get(f"/providers/{provider_id}")
 
     assert detail.status_code == 200
+    assert "data-test-preferences" in detail.text
+    assert 'name="client_profile"' in detail.text
     assert detail.text.count("data-model-fill") == 2
     assert 'data-model-value="model-a"' in detail.text
     assert 'data-model-value="model-b"' in detail.text
@@ -564,6 +570,18 @@ def test_detail_model_rows_fill_test_model_and_archive_stays_read_only() -> None
     assert archived_detail.text.count('class="model-row"') == 2
     assert "data-manual-model-toggle" not in archived_detail.text
     assert "/models/manual" not in archived_detail.text
+
+
+def test_model_fill_click_can_infer_client_profile_from_model_name() -> None:
+    script = (PROJECT_ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "inferClientProfileFromModel" in script
+    assert 'normalized.includes("gpt")' in script
+    assert 'return "codex";' in script
+    assert 'normalized.includes("claude")' in script
+    assert 'return "claude_code";' in script
+    assert 'clientProfileSelect.dispatchEvent(new Event("change", { bubbles: true }))' in script
+    assert 'modelInput.dispatchEvent(new Event("change", { bubbles: true }))' in script
 
 
 def test_manual_models_are_added_sorted_and_only_manual_models_can_be_deleted() -> None:
