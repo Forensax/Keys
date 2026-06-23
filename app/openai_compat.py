@@ -14,10 +14,12 @@ from .proxy_support import sanitize_proxy_error
 
 
 CLIENT_PROFILE_OPENAI_CHAT = "openai_chat"
+CLIENT_PROFILE_OPENAI_RESPONSES = "openai_responses"
 CLIENT_PROFILE_CODEX = "codex"
 CLIENT_PROFILE_CLAUDE_CODE = "claude_code"
 CLIENT_PROFILE_LABELS = {
-    CLIENT_PROFILE_OPENAI_CHAT: "标准 OpenAI",
+    CLIENT_PROFILE_OPENAI_CHAT: "OpenAI  Chat Completions",
+    CLIENT_PROFILE_OPENAI_RESPONSES: "OpenAI  Responses",
     CLIENT_PROFILE_CODEX: "Codex",
     CLIENT_PROFILE_CLAUDE_CODE: "Claude Code",
 }
@@ -201,6 +203,13 @@ def build_connectivity_request(client_profile: str, model_id: str) -> tuple[str,
             "max_tokens": 8,
             "system": [{"type": "text", "text": CLAUDE_CODE_SYSTEM_PROMPT}],
             "metadata": {"user_id": _claude_code_metadata_user_id()},
+        }
+    if profile == CLIENT_PROFILE_OPENAI_RESPONSES:
+        return "/responses", {
+            "model": model_id,
+            "input": "Reply exactly with pong.",
+            "max_output_tokens": 8,
+            "store": False,
         }
     return "/chat/completions", {
         "model": model_id,

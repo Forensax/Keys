@@ -11,7 +11,7 @@
 - 支持软归档：归档后从主页隐藏，可在独立归档页查看、恢复或永久删除。
 - 从 `GET {base_url}/models` 拉取模型列表。
 - 支持手动添加和删除模型；手动模型始终排在接口刷新模型前面，刷新时不会被删除。
-- 支持标准 OpenAI、Codex 和 Claude Code 三种客户端兼容测试模式。
+- 支持 OpenAI  Chat Completions、OpenAI  Responses、Codex 和 Claude Code 客户端兼容测试模式。
 - 模型列表不可用时，可以直接输入模型名称执行连通性测试。
 - 连通性测试的模型、客户端模式和网络路径会自动保存。
 - 首页支持每行单独“测试”和“测试全部”；批量测试最多并发测试 5 个已启用中转站，并逐行更新最近结果。
@@ -227,15 +227,16 @@ JSON 备份版本 6 会导出定时任务定义和目标映射，但不会导出
 
 ## 兼容范围
 
-第一版只面向标准 OpenAI 兼容接口：
+当前内置以下客户端模式：
 
 - 鉴权方式：`Authorization: Bearer <api_key>`
 - 模型列表：`GET {base_url}/models`，请求会携带中转站默认客户端模式对应的 Header。
-- 标准 OpenAI：`POST {base_url}/chat/completions`
-- Codex：`POST {base_url}/responses`
+- OpenAI  Chat Completions：`POST {base_url}/chat/completions`
+- OpenAI  Responses：`POST {base_url}/responses`
+- Codex：`POST {base_url}/responses`（Codex 专用请求头和流式 payload）
 - Claude Code：`POST {base_url}/messages`
 
-每个中转站可以保存一个默认客户端模式。详情页选择的测试模式会独立保存供后续测试使用，但不会修改中转站默认客户端模式。测试历史会记录每次实际使用的模式。JSON 备份中的 `client_profile` 可取 `openai_chat`、`codex` 或 `claude_code`；旧备份没有该字段时按标准 OpenAI 导入。
+每个中转站可以保存一个默认客户端模式。详情页选择的测试模式会独立保存供后续测试使用，但不会修改中转站默认客户端模式。测试历史会记录每次实际使用的模式。JSON 备份中的 `client_profile` 可取 `openai_chat`、`openai_responses`、`codex` 或 `claude_code`；旧备份没有该字段时按 OpenAI  Chat Completions 导入。
 
 详情页会独立保存最近选择的测试模型、客户端模式和网络路径，这些设置用于下一次详情页测试、首页单行“测试”和首页“测试全部”。首页模型列表点击后仍会复制模型名称，同时把该模型保存为首页测试模型。首页单行“测试”会直接更新当前行的最近测试结果；“测试全部”仅处理未归档且启用的中转站。缺少模型或代理不可用时不会发送外部请求，但会记录一条失败结果；禁用中转站的首页单行测试会被跳过且不写入测试历史。
 

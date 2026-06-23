@@ -11,6 +11,7 @@ from app.openai_compat import (
     CLAUDE_CODE_SYSTEM_PROMPT,
     CLIENT_PROFILE_CLAUDE_CODE,
     CLIENT_PROFILE_CODEX,
+    CLIENT_PROFILE_OPENAI_RESPONSES,
     build_url,
     fetch_models,
     normalize_base_url,
@@ -84,6 +85,39 @@ async def test_chat_completion_success() -> None:
     assert result.status == "success"
     assert result.error_message == ""
     assert result.latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_openai_responses_profile_builds_plain_responses_request() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://relay.example/v1/responses"
+        assert request.headers["authorization"] == "Bearer sk-test"
+        assert request.headers["accept"] == "application/json"
+        assert "originator" not in request.headers
+        assert "session-id" not in request.headers
+        assert "thread-id" not in request.headers
+        assert "x-client-request-id" not in request.headers
+        assert "x-codex-window-id" not in request.headers
+        assert "x-codex-turn-metadata" not in request.headers
+        body = json.loads(request.content)
+        assert body == {
+            "model": "gpt-responses",
+            "input": "Reply exactly with pong.",
+            "max_output_tokens": 8,
+            "store": False,
+        }
+        return httpx.Response(200, json={"output_text": "pong"})
+
+    result = await run_connectivity_test(
+        "https://relay.example/v1",
+        "sk-test",
+        "gpt-responses",
+        CLIENT_PROFILE_OPENAI_RESPONSES,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result.status == "success"
+    assert result.error_message == ""
 
 
 @pytest.mark.asyncio

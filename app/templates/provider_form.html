@@ -10,7 +10,7 @@
     {% if provider %}
       <p class="muted">已保存 Key：<span class="mono">{{ provider.key_hint }}</span></p>
     {% else %}
-      <p class="muted">保存一个标准 OpenAI 兼容接口地址。</p>
+      <p class="muted">保存一个 OpenAI 兼容接口地址。</p>
     {% endif %}
   </div>
   <a class="button" href="{{ '/providers/' ~ provider.id if provider else '/' }}">取消</a>

@@ -23,6 +23,7 @@ from app.models import ConnectivityTest, NetworkProxy, Provider, ProviderGroup, 
 from app.openai_compat import (  # noqa: E402
     CLIENT_PROFILE_CLAUDE_CODE,
     CLIENT_PROFILE_CODEX,
+    CLIENT_PROFILE_OPENAI_RESPONSES,
     ConnectivityTestResult,
     ModelInfo,
 )
@@ -87,6 +88,10 @@ def test_setup_login_and_provider_crud() -> None:
     )
     assert response.status_code == 303
 
+    new_form = client.get("/providers/new").text
+    assert "OpenAI  Chat Completions" in new_form
+    assert "OpenAI  Responses" in new_form
+
     create = client.post(
         "/providers",
         data={
@@ -95,7 +100,7 @@ def test_setup_login_and_provider_crud() -> None:
             "api_key": "sk-test-secret",
             "notes": "primary",
             "enabled": "on",
-            "client_profile": CLIENT_PROFILE_CODEX,
+            "client_profile": CLIENT_PROFILE_OPENAI_RESPONSES,
         },
         follow_redirects=False,
     )
@@ -104,7 +109,7 @@ def test_setup_login_and_provider_crud() -> None:
     with SessionLocal() as db:
         provider = db.scalar(select(Provider).where(Provider.name == "Relay"))
         assert provider is not None
-        assert provider.client_profile == CLIENT_PROFILE_CODEX
+        assert provider.client_profile == CLIENT_PROFILE_OPENAI_RESPONSES
 
     updated = client.post(
         create.headers["location"],
@@ -1057,7 +1062,7 @@ def test_import_rejects_invalid_client_profile_without_stopping_other_rows() -> 
                 "name": "Valid Relay",
                 "base_url": "https://valid.example/v1",
                 "api_key": "sk-valid",
-                "client_profile": CLIENT_PROFILE_CLAUDE_CODE,
+                "client_profile": CLIENT_PROFILE_OPENAI_RESPONSES,
             },
         ]
     }
@@ -1072,7 +1077,7 @@ def test_import_rejects_invalid_client_profile_without_stopping_other_rows() -> 
     with SessionLocal() as db:
         assert db.scalar(select(Provider).where(Provider.name == "Invalid Relay")) is None
         valid = db.scalar(select(Provider).where(Provider.name == "Valid Relay"))
-        assert valid is not None and valid.client_profile == CLIENT_PROFILE_CLAUDE_CODE
+        assert valid is not None and valid.client_profile == CLIENT_PROFILE_OPENAI_RESPONSES
 
 
 def test_proxy_credentials_are_encrypted_and_proxy_page_masks_them() -> None:
@@ -1250,8 +1255,9 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
     with SessionLocal() as db:
         provider = db.scalar(select(Provider).where(Provider.name == "Proxy Relay"))
         assert provider is not None
+        provider.client_profile = CLIENT_PROFILE_OPENAI_RESPONSES
         provider.test_model_id = "gpt-batch"
-        provider.test_client_profile = CLIENT_PROFILE_CODEX
+        provider.test_client_profile = CLIENT_PROFILE_OPENAI_RESPONSES
         provider.test_network_route = f"proxy:{proxy_id}"
         db.add_all(
             [
@@ -1272,8 +1278,9 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
     assert "username" not in public_export["proxies"][0]
     assert "password" not in public_export["proxies"][0]
     assert public_export["providers"][0]["default_proxy"] == "Local Proxy"
+    assert public_export["providers"][0]["client_profile"] == CLIENT_PROFILE_OPENAI_RESPONSES
     assert public_export["providers"][0]["test_model_id"] == "gpt-batch"
-    assert public_export["providers"][0]["test_client_profile"] == CLIENT_PROFILE_CODEX
+    assert public_export["providers"][0]["test_client_profile"] == CLIENT_PROFILE_OPENAI_RESPONSES
     assert public_export["providers"][0]["test_network_route"] == "proxy:Local Proxy"
     assert [model["is_manual"] for model in public_export["providers"][0]["models"]] == [True, False]
 
@@ -1307,9 +1314,10 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
     with SessionLocal() as db:
         provider = db.scalar(select(Provider).where(Provider.name == "Proxy Relay"))
         assert provider is not None and provider.default_proxy is not None
+        assert provider.client_profile == CLIENT_PROFILE_OPENAI_RESPONSES
         assert provider.default_proxy.name == "Local Proxy"
         assert provider.test_model_id == "gpt-batch"
-        assert provider.test_client_profile == CLIENT_PROFILE_CODEX
+        assert provider.test_client_profile == CLIENT_PROFILE_OPENAI_RESPONSES
         assert provider.test_network_route == f"proxy:{provider.default_proxy.id}"
         assert [(model.model_id, model.is_manual) for model in provider.models] == [
             ("manual-model", True),
@@ -1329,7 +1337,7 @@ def test_test_preferences_endpoint_saves_partial_updates_and_detail_selection() 
     )
     profile_response = client.post(
         f"/providers/{provider_id}/test-preferences",
-        data={"client_profile": CLIENT_PROFILE_CODEX},
+        data={"client_profile": CLIENT_PROFILE_OPENAI_RESPONSES},
         headers={"accept": "application/json"},
     )
     route_response = client.post(
@@ -1343,11 +1351,11 @@ def test_test_preferences_endpoint_saves_partial_updates_and_detail_selection() 
         provider = db.get(Provider, provider_id)
         assert provider is not None
         assert provider.test_model_id == "manual-batch-model"
-        assert provider.test_client_profile == CLIENT_PROFILE_CODEX
+        assert provider.test_client_profile == CLIENT_PROFILE_OPENAI_RESPONSES
         assert provider.test_network_route == "direct"
     detail = client.get(f"/providers/{provider_id}").text
     assert 'value="manual-batch-model"' in detail
-    assert f'<option value="{CLIENT_PROFILE_CODEX}" selected>' in detail
+    assert f'<option value="{CLIENT_PROFILE_OPENAI_RESPONSES}" selected>' in detail
     assert '<option value="direct" selected>' in detail
     assert "data-test-preferences" in detail
     assert "测试配置已保存" in detail
