@@ -128,9 +128,6 @@ class ScheduledTask(Base):
     daily_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
     timezone_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Shanghai")
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    enable_telegram_notification: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    notify_on_success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    notify_on_failure: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

@@ -142,29 +142,6 @@ def ensure_scheduling_columns(bind: Engine = engine) -> None:
             connection.execute(text(statement))
 
 
-def ensure_telegram_notification_columns(bind: Engine = engine) -> None:
-    inspector = inspect(bind)
-    if "scheduled_tasks" not in inspector.get_table_names():
-        return
-    migrations = {
-        "enable_telegram_notification": (
-            "ALTER TABLE scheduled_tasks ADD COLUMN enable_telegram_notification BOOLEAN NOT NULL DEFAULT 0"
-        ),
-        "notify_on_success": (
-            "ALTER TABLE scheduled_tasks ADD COLUMN notify_on_success BOOLEAN NOT NULL DEFAULT 0"
-        ),
-        "notify_on_failure": (
-            "ALTER TABLE scheduled_tasks ADD COLUMN notify_on_failure BOOLEAN NOT NULL DEFAULT 0"
-        ),
-    }
-    columns = {column["name"] for column in inspector.get_columns("scheduled_tasks")}
-    for column_name, statement in migrations.items():
-        if column_name in columns:
-            continue
-        with bind.begin() as connection:
-            connection.execute(text(statement))
-
-
 def init_db() -> None:
     from . import models  # noqa: F401
 
@@ -176,7 +153,6 @@ def init_db() -> None:
     ensure_model_source_column()
     ensure_provider_group_column()
     ensure_scheduling_columns()
-    ensure_telegram_notification_columns()
 
 
 def get_db() -> Generator[Session, None, None]:

@@ -81,7 +81,7 @@
   {% if tasks %}
     <div class="table-wrap">
       <table class="schedule-table">
-        <thead><tr><th>任务</th><th>目标</th><th>周期</th><th>状态</th><th>通知</th><th>下次运行</th><th>最近结果</th><th></th></tr></thead>
+        <thead><tr><th>任务</th><th>目标</th><th>周期</th><th>状态</th><th>下次运行</th><th>最近结果</th><th></th></tr></thead>
         <tbody>
           {% for task in tasks %}
             {% set latest = task.runs[0] if task.runs else None %}
@@ -90,11 +90,6 @@
               <td>{{ task_target_summary(task) }}</td>
               <td>{{ task_schedule_summary(task) }}</td>
               <td><span class="status {{ 'success' if task.enabled else 'disabled' }}">{{ "运行中" if task_is_running(task.id) else ("启用" if task.enabled else "停用") }}</span></td>
-              <td>
-                {% if task.enable_telegram_notification %}
-                  <span title="成功通知{% if task.notify_on_success %}✓{% endif %} 失败通知{% if task.notify_on_failure %}✓{% endif %}">🔔</span>
-                {% endif %}
-              </td>
               <td>{{ format_local_datetime(task.next_run_at) }}</td>
               <td>
                 {% if latest %}<span class="status {{ latest.status }}">{{ latest.status }}</span> <span class="muted small">{{ latest.success_count }}/{{ latest.total_count }} 成功</span>{% else %}<span class="muted">尚未运行</span>{% endif %}

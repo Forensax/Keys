@@ -387,27 +387,8 @@
     });
     modelFillRows.forEach((row) => {
       row.addEventListener("click", () => {
-        const modelName = row.dataset.modelValue;
-        modelInput.value = modelName;
-        syncSelectedModel(modelName);
-
-        // 根据模型名称智能选择客户端模式
-        const modelNameLower = modelName.toLowerCase();
-        const clientProfileSelect = preferenceForm.querySelector('[name="client_profile"]');
-        let targetProfile = null;
-
-        if (modelNameLower.includes('gpt')) {
-          targetProfile = 'codex';
-        } else if (modelNameLower.includes('claude')) {
-          targetProfile = 'claude_code';
-        }
-
-        // 如果匹配到目标客户端模式且与当前不同，则切换
-        if (targetProfile && clientProfileSelect.value !== targetProfile) {
-          clientProfileSelect.value = targetProfile;
-          clientProfileSelect.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-
+        modelInput.value = row.dataset.modelValue;
+        syncSelectedModel(modelInput.value);
         modelInput.dispatchEvent(new Event("change", { bubbles: true }));
       });
     });
