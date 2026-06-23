@@ -34,7 +34,7 @@
 {% if provider.archived_at %}
   <div class="archive-notice">
     <strong>已归档，只读</strong>
-    <span>归档于 {{ provider.archived_at.strftime("%Y-%m-%d %H:%M:%S") }}。恢复后才能编辑、刷新模型或运行测试。</span>
+    <span>归档于 {{ format_local_datetime(provider.archived_at) }}。恢复后才能编辑、刷新模型或运行测试。</span>
   </div>
 {% endif %}
 
@@ -53,7 +53,7 @@
   </div>
   <div class="panel metric">
     <span class="label">最近更新</span>
-    <strong>{{ provider.updated_at.strftime("%Y-%m-%d %H:%M") if provider.updated_at else "" }}</strong>
+    <strong>{{ format_local_datetime(provider.updated_at) }}</strong>
   </div>
 </section>
 
@@ -230,7 +230,7 @@
         <tbody>
           {% for test in provider.tests[:20] %}
             <tr>
-              <td>{{ test.tested_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+              <td>{{ format_local_datetime(test.tested_at) }}</td>
               <td class="mono">{{ test.model_id }}</td>
               <td>{{ client_profile_labels.get(test.client_profile, test.client_profile) }}</td>
               <td>{{ test.network_route }}</td>

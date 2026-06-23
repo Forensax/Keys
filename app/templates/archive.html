@@ -42,7 +42,7 @@
               <button class="copy-value mono" type="button" data-copy-secret-url="/providers/{{ provider.id }}/api-key" title="点击复制完整 API Key">{{ provider.key_hint }}</button>
             </td>
             <td>{{ provider.models|length }}</td>
-            <td class="archive-time">{{ provider.archived_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+            <td class="archive-time">{{ format_local_datetime(provider.archived_at) }}</td>
             <td class="action-cell">
               <div class="actions archive-actions">
                 <a class="button small" href="/providers/{{ provider.id }}">查看</a>

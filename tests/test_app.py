@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import httpx
 from fastapi.testclient import TestClient  # noqa: E402
@@ -820,6 +821,39 @@ def test_archive_and_restore_provider_flow() -> None:
     assert restored.headers["location"] == "/archive"
     assert f'href="/providers/{provider_id}"' in client.get("/").text
     assert f'href="/providers/{provider_id}"' not in client.get("/archive").text
+
+
+def test_visible_provider_times_are_rendered_in_app_timezone() -> None:
+    reset_db()
+    client = TestClient(app)
+    provider_id = setup_and_create_provider(client)
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        provider.archived_at = datetime(2026, 6, 18, 8, 30, tzinfo=timezone.utc)
+        provider.updated_at = datetime(2026, 6, 18, 9, 5, tzinfo=timezone.utc)
+        db.add(
+            ConnectivityTest(
+                provider_id=provider_id,
+                model_id="gpt-test",
+                status="success",
+                latency_ms=42,
+                tested_at=datetime(2026, 6, 18, 10, 15, tzinfo=timezone.utc),
+            )
+        )
+        db.commit()
+
+    archive = client.get("/archive").text
+    detail = client.get(f"/providers/{provider_id}").text
+
+    assert "2026-06-18 16:30:00" in archive
+    assert "2026-06-18 08:30:00" not in archive
+    assert "归档于 2026-06-18 16:30:00" in detail
+    assert "2026-06-18 17:05:00" in detail
+    assert "2026-06-18 18:15:00" in detail
+    assert "2026-06-18 08:30:00" not in detail
+    assert "2026-06-18 09:05:00" not in detail
+    assert "2026-06-18 10:15:00" not in detail
 
 
 def test_archived_provider_rejects_mutations_but_allows_copy_and_delete() -> None:
