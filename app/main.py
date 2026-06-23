@@ -1707,9 +1707,9 @@ def save_telegram_config(
     request: Request,
     bot_token: Annotated[str, Form()],
     chat_id: Annotated[str, Form()],
+    db: Annotated[Session, Depends(get_db)],
     enabled: Annotated[bool, Form()] = False,
     proxy_id: Annotated[str, Form()] = "",
-    db: Annotated[Session, Depends(get_db)] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     fernet = require_session_fernet(request)
