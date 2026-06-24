@@ -80,7 +80,23 @@ async def post_telegram_message(
             f"https://api.telegram.org/bot{bot_token}/sendMessage",
             json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
         )
-        response.raise_for_status()
+        if response.is_error:
+            raise ValueError(telegram_api_error_message(response))
+
+
+def telegram_api_error_message(response: httpx.Response) -> str:
+    detail = ""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        description = payload.get("description")
+        if isinstance(description, str):
+            detail = description.strip()
+    if not detail:
+        detail = response.text.strip() or response.reason_phrase or "请求失败"
+    return f"Telegram API HTTP {response.status_code}: {detail}"
 
 
 def format_telegram_time(value: datetime) -> str:

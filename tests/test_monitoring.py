@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, select
 
@@ -292,6 +293,20 @@ def test_telegram_config_is_encrypted_and_test_message_uses_proxy(monkeypatch) -
     assert "123:token" not in page.text
     assert "已保存，留空则不修改" in page.text
     client.close()
+
+
+def test_telegram_api_error_message_uses_safe_description() -> None:
+    response = httpx.Response(
+        400,
+        json={"ok": False, "error_code": 400, "description": "Bad Request: chat not found"},
+        request=httpx.Request("POST", "https://api.telegram.org/bot123:secret/sendMessage"),
+    )
+
+    message = notifications_module.telegram_api_error_message(response)
+
+    assert message == "Telegram API HTTP 400: Bad Request: chat not found"
+    assert "123:secret" not in message
+    assert "sendMessage" not in message
 
 
 def test_backup_v7_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_reset) -> None:

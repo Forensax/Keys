@@ -55,3 +55,19 @@ def test_proxy_error_sanitizer_expands_empty_connect_error_cause() -> None:
     sanitized = sanitize_proxy_error(error)
 
     assert sanitized == "ConnectError: proxy refused connection"
+
+
+def test_proxy_error_sanitizer_redacts_telegram_bot_token() -> None:
+    request = httpx.Request("POST", "https://api.telegram.org/bot123456:secret-token/sendMessage")
+    response = httpx.Response(400, request=request)
+    error = httpx.HTTPStatusError(
+        "Client error '400 Bad Request' for url 'https://api.telegram.org/bot123456:secret-token/sendMessage'",
+        request=request,
+        response=response,
+    )
+
+    sanitized = sanitize_proxy_error(error)
+
+    assert "123456" not in sanitized
+    assert "secret-token" not in sanitized
+    assert "https://api.telegram.org/bot***/sendMessage" in sanitized
