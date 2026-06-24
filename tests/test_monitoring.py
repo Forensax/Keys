@@ -200,6 +200,8 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert "watch relay" in task_table
     assert "Relay" in task_table
     assert "gpt-watch" in task_table
+    assert "monitoring-period-cell" in task_table
+    assert "每 5 分钟 · 最多 1 次" in task_table
     assert "恢复" in task_table
     assert "立即检测" in task_table
     assert "停用" in task_table
@@ -209,6 +211,8 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     styles = Path("app/static/styles.css").read_text(encoding="utf-8")
     assert ".monitoring-table,\n.monitoring-check-table" not in styles
     assert ".monitoring-table {\n  min-width: 0;" in styles
+    assert ".monitoring-table .schedule-actions {\n  flex-wrap: nowrap;" in styles
+    assert ".monitoring-period-cell span {\n  display: block;" in styles
     assert ".monitoring-check-table" in styles and "min-width: 1040px" in styles
 
     edit_page = client.get(f"/monitoring/tasks/{task_id}/edit")

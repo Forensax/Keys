@@ -992,23 +992,23 @@ tr:last-child td {
 }
 
 .monitoring-table th:nth-child(2) {
-  width: 16%;
+  width: 14%;
 }
 
 .monitoring-table th:nth-child(3) {
-  width: 21%;
+  width: 17%;
 }
 
 .monitoring-table th:nth-child(4) {
-  width: 16%;
+  width: 13%;
 }
 
 .monitoring-table th:nth-child(5) {
-  width: 16%;
+  width: 15%;
 }
 
 .monitoring-table th:nth-child(6) {
-  width: 12%;
+  width: 22%;
 }
 
 .monitoring-table td {
@@ -1017,12 +1017,25 @@ tr:last-child td {
 
 .monitoring-table .action-cell {
   overflow: visible;
-  white-space: normal;
+  white-space: nowrap;
 }
 
 .monitoring-table .schedule-actions {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
+  justify-content: flex-end;
+}
+
+.monitoring-table .schedule-actions form {
+  display: inline-flex;
+}
+
+.monitoring-table .schedule-actions .small {
+  padding: 4px 7px;
+}
+
+.monitoring-period-cell span {
+  display: block;
 }
 
 .monitoring-table .task-name,
