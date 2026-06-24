@@ -20,7 +20,7 @@ from .models import (
     ScheduledTaskProvider,
     utc_now,
 )
-from .notifications import send_monitoring_recovery_notification
+from .notifications import send_monitoring_failure_notification, send_monitoring_recovery_notification
 from .openai_compat import VALID_CLIENT_PROFILES, run_connectivity_test
 from .proxy_support import sanitize_proxy_error
 from .security import (
@@ -286,6 +286,7 @@ def _monitoring_check_for_skipped(task: MonitoringTask, provider: Provider | Non
         error_message=message,
         raw_response_excerpt="",
         notification_status="skipped",
+        notification_event="",
         notification_attempt_count=0,
         notification_error="",
         checked_at=utc_now(),
@@ -399,17 +400,22 @@ async def _run_monitoring_check_with_retries(
     return last_check
 
 
-async def _send_monitoring_recovery_notification_with_retries(
+async def _send_monitoring_notification_with_retries(
     db,
     task: MonitoringTask,
     check: MonitoringCheck,
     fernet: Fernet,
+    *,
+    event: str,
 ) -> tuple[bool, str, int]:
     attempts = monitoring_retry_attempts(task)
     interval_seconds = monitoring_retry_interval_seconds(task)
     notification_error = ""
     for attempt in range(1, attempts + 1):
-        notified, notification_error = await send_monitoring_recovery_notification(db, task, check, fernet)
+        if event == "failure":
+            notified, notification_error = await send_monitoring_failure_notification(db, task, check, fernet)
+        else:
+            notified, notification_error = await send_monitoring_recovery_notification(db, task, check, fernet)
         if notified:
             return notified, notification_error, attempt
         if notification_error == "Telegram 通知未启用。":
@@ -453,16 +459,21 @@ async def execute_monitoring_task_run(task_id: int, *, fernet: Fernet) -> None:
                 task.last_latency_ms = check.latency_ms
                 task.last_checked_at = check.checked_at
                 if check.status == "success":
-                    if task.current_success_notified:
+                    task.current_failure_notified = False
+                    if not task.notify_on_recovery:
+                        check.notification_status = "skipped"
+                        check.notification_error = "恢复可用通知未启用。"
+                    elif task.current_success_notified:
                         check.notification_status = "skipped"
                         check.notification_error = "当前成功周期已通知。"
                     else:
+                        check.notification_event = "recovery"
                         (
                             notified,
                             notification_error,
                             notification_attempt_count,
-                        ) = await _send_monitoring_recovery_notification_with_retries(
-                            db, task, check, fernet
+                        ) = await _send_monitoring_notification_with_retries(
+                            db, task, check, fernet, event="recovery"
                         )
                         check.notification_attempt_count = notification_attempt_count
                         if notified:
@@ -475,8 +486,35 @@ async def execute_monitoring_task_run(task_id: int, *, fernet: Fernet) -> None:
                                 "skipped" if notification_error == "Telegram 通知未启用。" else "failed"
                             )
                             check.notification_error = notification_error
-                else:
+                elif check.status == "failed":
                     task.current_success_notified = False
+                    if not task.notify_on_failure:
+                        check.notification_status = "skipped"
+                        check.notification_error = "变为不可用通知未启用。"
+                    elif task.current_failure_notified:
+                        check.notification_status = "skipped"
+                        check.notification_error = "当前失败周期已通知。"
+                    else:
+                        check.notification_event = "failure"
+                        (
+                            notified,
+                            notification_error,
+                            notification_attempt_count,
+                        ) = await _send_monitoring_notification_with_retries(
+                            db, task, check, fernet, event="failure"
+                        )
+                        check.notification_attempt_count = notification_attempt_count
+                        if notified:
+                            check.notification_status = "sent"
+                            check.notification_error = ""
+                            task.current_failure_notified = True
+                            task.last_notified_at = utc_now()
+                        else:
+                            check.notification_status = (
+                                "skipped" if notification_error == "Telegram 通知未启用。" else "failed"
+                            )
+                            check.notification_error = notification_error
+                else:
                     if not check.notification_status:
                         check.notification_status = "skipped"
                 db.add(check)

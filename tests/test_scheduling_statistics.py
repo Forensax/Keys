@@ -327,7 +327,7 @@ def test_statistics_filter_preferences_save_restore_and_repair() -> None:
     client.close()
 
 
-def test_backup_v8_round_trips_schedule_definitions_as_disabled(shared_db_reset) -> None:
+def test_backup_v9_round_trips_schedule_definitions_as_disabled(shared_db_reset) -> None:
     client = setup_client()
     response = client.post(
         "/schedules",
@@ -341,7 +341,7 @@ def test_backup_v8_round_trips_schedule_definitions_as_disabled(shared_db_reset)
     )
     assert response.status_code == 303
     exported = client.post("/export", data={"password": ""}).json()
-    assert exported["version"] == 8
+    assert exported["version"] == 9
     assert exported["schedules"][0]["name"] == "daily check"
     assert "scheduler_wrapped_vault_key" not in json.dumps(exported)
     client.close()

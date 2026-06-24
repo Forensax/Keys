@@ -119,6 +119,22 @@ def build_recovery_message(task: MonitoringTask, check: MonitoringCheck) -> str:
     )
 
 
+def build_failure_message(task: MonitoringTask, check: MonitoringCheck) -> str:
+    error = check.error_message or "未返回具体错误"
+    return "\n".join(
+        [
+            "<b>中转站变为不可用</b>",
+            f"监控任务：{escape(task.name)}",
+            f"站点：{escape(check.provider_name_snapshot)}",
+            f"模型：{escape(check.model_id)}",
+            f"客户端：{escape(check.client_profile)}",
+            f"网络：{escape(check.network_route)}",
+            f"错误：{escape(error)}",
+            f"时间：{format_telegram_time(check.checked_at)}",
+        ]
+    )
+
+
 async def send_monitoring_recovery_notification(
     db: Session,
     task: MonitoringTask,
@@ -134,6 +150,28 @@ async def send_monitoring_recovery_notification(
             bot_token=bot_token,
             chat_id=chat_id,
             text=build_recovery_message(task, check),
+            proxy_url=proxy_url,
+        )
+        return True, ""
+    except Exception as exc:
+        return False, sanitize_proxy_error(exc)
+
+
+async def send_monitoring_failure_notification(
+    db: Session,
+    task: MonitoringTask,
+    check: MonitoringCheck,
+    fernet: Fernet,
+) -> tuple[bool, str]:
+    if get_setting(db, SETTING_TELEGRAM_ENABLED) != "true":
+        return False, "Telegram 通知未启用。"
+    try:
+        bot_token, chat_id = decrypt_telegram_credentials(db, fernet)
+        proxy_url = telegram_proxy_url(db, fernet)
+        await post_telegram_message(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            text=build_failure_message(task, check),
             proxy_url=proxy_url,
         )
         return True, ""

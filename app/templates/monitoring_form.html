@@ -17,7 +17,10 @@
   {% set selected_provider_id = values.get('provider_id', task.provider_id) %}
   {% set selected_profile = values.get('client_profile', task.client_profile) %}
   {% set selected_route = values.get('network_route', task.network_route) %}
+  {% set selected_notify_recovery = values.get('notify_on_recovery', task.notify_on_recovery) %}
+  {% set selected_notify_failure = values.get('notify_on_failure', task.notify_on_failure) %}
   <form method="post" action="/monitoring/tasks/{{ task.id }}" class="form-grid schedule-form">
+    <input type="hidden" name="notification_preferences_present" value="1">
     <label>任务名称<input name="name" maxlength="160" required value="{{ values.get('name', task.name) }}"></label>
     <label>中转站
       <select name="provider_id" required>
@@ -47,6 +50,11 @@
     <label>检测间隔（分钟）<input type="number" name="interval_minutes" min="{{ min_interval }}" max="{{ max_interval }}" value="{{ values.get('interval_minutes', task.interval_minutes) }}"></label>
     <label>尝试次数<input type="number" name="retry_attempts" min="{{ min_retry_attempts }}" max="{{ max_retry_attempts }}" value="{{ values.get('retry_attempts', task.retry_attempts) }}"></label>
     <label>重试间隔（秒）<input type="number" name="retry_interval_seconds" min="{{ min_retry_interval_seconds }}" max="{{ max_retry_interval_seconds }}" value="{{ values.get('retry_interval_seconds', task.retry_interval_seconds) }}"></label>
+    <div class="wide">
+      <span class="form-label">通知类型</span>
+      <label class="checkbox-row"><input type="checkbox" name="notify_on_recovery" {% if selected_notify_recovery %}checked{% endif %}>恢复可用时通知</label>
+      <label class="checkbox-row"><input type="checkbox" name="notify_on_failure" {% if selected_notify_failure %}checked{% endif %}>变为不可用时通知</label>
+    </div>
     <label class="checkbox-row"><input type="checkbox" name="enabled" {% if values.get('enabled', task.enabled) %}checked{% endif %}>启用任务</label>
     <div class="form-actions full-span"><a class="button" href="/monitoring">取消</a><button class="primary" type="submit">保存任务</button></div>
   </form>

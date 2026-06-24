@@ -984,7 +984,7 @@ def test_group_export_and_import_preserve_references_and_creation_order(shared_d
         "/export",
         data={"include_secrets": "on", "password": "long-test-password"},
     ).json()
-    assert exported["version"] == 8
+    assert exported["version"] == 9
     assert [group["name"] for group in exported["groups"]] == ["Zulu", "Alpha"]
     assert {provider["name"]: provider["group"] for provider in exported["providers"]} == {
         "Alpha Relay": "Alpha",
@@ -1291,7 +1291,7 @@ def test_proxy_export_and_secret_import_preserve_default_reference(shared_db_res
         db.commit()
 
     public_export = client.post("/export", data={"password": ""}).json()
-    assert public_export["version"] == 8
+    assert public_export["version"] == 9
     assert public_export["proxies"][0]["has_auth"] is True
     assert "username" not in public_export["proxies"][0]
     assert "password" not in public_export["proxies"][0]

@@ -199,6 +199,13 @@ label {
   gap: 6px;
 }
 
+.form-label {
+  color: #30394a;
+  display: block;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+
 input,
 textarea,
 select {

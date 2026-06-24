@@ -207,6 +207,9 @@ class MonitoringTask(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     current_success_notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    current_failure_notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notify_on_recovery: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    notify_on_failure: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -238,6 +241,7 @@ class MonitoringCheck(Base):
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     raw_response_excerpt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     notification_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_sent")
+    notification_event: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     notification_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     notification_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)

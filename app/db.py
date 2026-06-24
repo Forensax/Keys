@@ -176,6 +176,15 @@ def ensure_monitoring_columns(bind: Engine = engine) -> None:
         "current_success_notified": (
             "ALTER TABLE monitoring_tasks ADD COLUMN current_success_notified BOOLEAN NOT NULL DEFAULT 0"
         ),
+        "current_failure_notified": (
+            "ALTER TABLE monitoring_tasks ADD COLUMN current_failure_notified BOOLEAN NOT NULL DEFAULT 0"
+        ),
+        "notify_on_recovery": (
+            "ALTER TABLE monitoring_tasks ADD COLUMN notify_on_recovery BOOLEAN NOT NULL DEFAULT 1"
+        ),
+        "notify_on_failure": (
+            "ALTER TABLE monitoring_tasks ADD COLUMN notify_on_failure BOOLEAN NOT NULL DEFAULT 0"
+        ),
         "created_at": "ALTER TABLE monitoring_tasks ADD COLUMN created_at DATETIME",
         "updated_at": "ALTER TABLE monitoring_tasks ADD COLUMN updated_at DATETIME",
     }
@@ -207,6 +216,9 @@ def ensure_monitoring_columns(bind: Engine = engine) -> None:
         ),
         "notification_status": (
             "ALTER TABLE monitoring_checks ADD COLUMN notification_status VARCHAR(32) NOT NULL DEFAULT 'not_sent'"
+        ),
+        "notification_event": (
+            "ALTER TABLE monitoring_checks ADD COLUMN notification_event VARCHAR(32) NOT NULL DEFAULT ''"
         ),
         "notification_attempt_count": (
             "ALTER TABLE monitoring_checks ADD COLUMN notification_attempt_count INTEGER NOT NULL DEFAULT 0"
