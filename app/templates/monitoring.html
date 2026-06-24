@@ -100,6 +100,8 @@
       </select>
     </label>
     <label>检测间隔（分钟）<input type="number" name="interval_minutes" min="{{ min_interval }}" max="{{ max_interval }}" value="{{ form_values.get('interval_minutes', 5) or 5 }}"></label>
+    <label>尝试次数<input type="number" name="retry_attempts" min="{{ min_retry_attempts }}" max="{{ max_retry_attempts }}" value="{{ form_values.get('retry_attempts', 1) or 1 }}"></label>
+    <label>重试间隔（秒）<input type="number" name="retry_interval_seconds" min="{{ min_retry_interval_seconds }}" max="{{ max_retry_interval_seconds }}" value="{{ form_values.get('retry_interval_seconds', 10) or 10 }}"></label>
     <label class="checkbox-row"><input type="checkbox" name="enabled" {% if form_values.get('enabled') %}checked{% endif %}>创建后立即启用</label>
     <div class="form-actions full-span"><button class="primary" type="submit">创建监控任务</button></div>
   </form>
@@ -117,7 +119,7 @@
               <td><strong>{{ task.name }}</strong></td>
               <td>{{ task.provider_name_snapshot }}</td>
               <td class="mono">{{ task.model_id }}</td>
-              <td>每 {{ task.interval_minutes }} 分钟</td>
+              <td>每 {{ task.interval_minutes }} 分钟 · 最多 {{ task.retry_attempts }} 次</td>
               <td>
                 <span class="status {{ task.last_status or ('success' if task.enabled else 'disabled') }}">{{ "运行中" if task_is_running(task.id) else (task.last_status or ("启用" if task.enabled else "停用")) }}</span>
                 {% if task.last_error %}<span class="muted small" title="{{ task.last_error }}">{{ task.last_error }}</span>{% endif %}
@@ -151,8 +153,8 @@
         <td>{{ check.provider_name_snapshot }}</td>
         <td class="mono">{{ check.model_id }}</td>
         <td><span class="status {{ check.status }}">{{ check.status }}</span></td>
-        <td>{{ check.latency_ms if check.latency_ms is not none else "" }}{% if check.latency_ms is not none %} ms{% endif %}</td>
-        <td><span class="status {{ check.notification_status }}">{{ check.notification_status }}</span></td>
+        <td>{{ check.latency_ms if check.latency_ms is not none else "" }}{% if check.latency_ms is not none %} ms{% endif %}{% if check.attempt_count %}<span class="muted small"> 检测 {{ check.attempt_count }}/{{ check.task.retry_attempts if check.task else check.attempt_count }}</span>{% endif %}</td>
+        <td><span class="status {{ check.notification_status }}">{{ check.notification_status }}</span>{% if check.notification_attempt_count %}<span class="muted small"> 通知 {{ check.notification_attempt_count }}/{{ check.task.retry_attempts if check.task else check.notification_attempt_count }}</span>{% endif %}</td>
         <td class="narrow" title="{{ check.error_message or check.notification_error }}">{{ check.error_message or check.notification_error or "—" }}</td>
       </tr>{% endfor %}</tbody>
     </table></div>

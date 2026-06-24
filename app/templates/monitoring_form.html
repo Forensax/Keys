@@ -45,6 +45,8 @@
       </select>
     </label>
     <label>检测间隔（分钟）<input type="number" name="interval_minutes" min="{{ min_interval }}" max="{{ max_interval }}" value="{{ values.get('interval_minutes', task.interval_minutes) }}"></label>
+    <label>尝试次数<input type="number" name="retry_attempts" min="{{ min_retry_attempts }}" max="{{ max_retry_attempts }}" value="{{ values.get('retry_attempts', task.retry_attempts) }}"></label>
+    <label>重试间隔（秒）<input type="number" name="retry_interval_seconds" min="{{ min_retry_interval_seconds }}" max="{{ max_retry_interval_seconds }}" value="{{ values.get('retry_interval_seconds', task.retry_interval_seconds) }}"></label>
     <label class="checkbox-row"><input type="checkbox" name="enabled" {% if values.get('enabled', task.enabled) %}checked{% endif %}>启用任务</label>
     <div class="form-actions full-span"><a class="button" href="/monitoring">取消</a><button class="primary" type="submit">保存任务</button></div>
   </form>

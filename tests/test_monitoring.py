@@ -73,8 +73,21 @@ def test_monitoring_tables_are_created_and_migration_is_repeatable(tmp_path) -> 
     assert {"monitoring_tasks", "monitoring_checks"} <= tables
     task_columns = {column["name"] for column in inspect(legacy).get_columns("monitoring_tasks")}
     check_columns = {column["name"] for column in inspect(legacy).get_columns("monitoring_checks")}
-    assert {"model_id", "client_profile", "network_route", "current_success_notified"} <= task_columns
-    assert {"notification_status", "notification_error", "checked_at"} <= check_columns
+    assert {
+        "model_id",
+        "client_profile",
+        "network_route",
+        "current_success_notified",
+        "retry_attempts",
+        "retry_interval_seconds",
+    } <= task_columns
+    assert {
+        "notification_status",
+        "notification_error",
+        "checked_at",
+        "attempt_count",
+        "notification_attempt_count",
+    } <= check_columns
 
 
 def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> None:
@@ -87,6 +100,26 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert "Telegram 通知" in page.text
     assert "新建监控任务" in page.text
     assert "/monitoring/tasks" in page.text
+    assert 'name="retry_attempts"' in page.text
+    assert 'name="retry_interval_seconds"' in page.text
+
+    invalid_retry = client.post(
+        "/monitoring/tasks",
+        data={
+            "name": "watch relay",
+            "provider_id": str(provider_id),
+            "model_id": "gpt-watch",
+            "client_profile": CLIENT_PROFILE_CODEX,
+            "network_route": "direct",
+            "interval_minutes": "5",
+            "retry_attempts": "6",
+            "retry_interval_seconds": "0",
+        },
+        follow_redirects=False,
+    )
+    assert invalid_retry.status_code == 400
+    assert "尝试次数必须在 1 到 5 次之间" in invalid_retry.text
+    assert "重试间隔必须在 1 到 300 秒之间" in invalid_retry.text
 
     blocked = client.post(
         "/monitoring/tasks",
@@ -124,6 +157,14 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
         assert task.next_run_at is None
         assert task.provider_id == provider_id
         assert task.model_id == "gpt-watch"
+        assert task.retry_attempts == 1
+        assert task.retry_interval_seconds == 10
+        task_id = task.id
+
+    edit_page = client.get(f"/monitoring/tasks/{task_id}/edit")
+    assert edit_page.status_code == 200
+    assert 'name="retry_attempts"' in edit_page.text
+    assert 'name="retry_interval_seconds"' in edit_page.text
 
     client.close()
 
@@ -194,6 +235,222 @@ def test_monitoring_checks_are_independent_and_recovery_notifications_are_statef
     client.close()
 
 
+def test_monitoring_retries_api_failures_and_records_final_check(monkeypatch) -> None:
+    client = setup_client()
+    provider_id = create_provider(client)
+    authorize_background()
+    fernet = monitoring_fernet()
+    sleeps: list[int] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    results = [
+        ConnectivityTestResult("failed", None, "first failure", ""),
+        ConnectivityTestResult("failed", None, "second failure", ""),
+        ConnectivityTestResult("success", 15, "", '{"result":"pong"}'),
+    ]
+
+    async def fake_run_connectivity_test(*args, **kwargs):
+        return results.pop(0)
+
+    monkeypatch.setattr(scheduler_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(scheduler_module, "run_connectivity_test", fake_run_connectivity_test)
+    with SessionLocal() as db:
+        task = MonitoringTask(
+            name="watch retry",
+            enabled=True,
+            provider_id=provider_id,
+            provider_name_snapshot="Relay",
+            provider_base_url_snapshot="https://relay.example/v1",
+            model_id="gpt-watch",
+            client_profile=CLIENT_PROFILE_CODEX,
+            network_route="direct",
+            interval_minutes=5,
+            retry_attempts=3,
+            retry_interval_seconds=1,
+        )
+        db.add(task)
+        db.commit()
+        task_id = task.id
+
+    asyncio.run(scheduler_module.execute_monitoring_task_run(task_id, fernet=fernet))
+
+    with SessionLocal() as db:
+        checks = list(db.scalars(select(MonitoringCheck).where(MonitoringCheck.task_id == task_id)))
+        assert len(checks) == 1
+        assert checks[0].status == "success"
+        assert checks[0].attempt_count == 3
+        assert checks[0].latency_ms == 15
+        assert db.scalar(select(ConnectivityTest)) is None
+    assert sleeps == [1, 1]
+    client.close()
+
+
+def test_monitoring_retries_until_api_attempts_are_exhausted(monkeypatch) -> None:
+    client = setup_client()
+    provider_id = create_provider(client)
+    authorize_background()
+    fernet = monitoring_fernet()
+
+    async def fake_sleep(seconds):
+        return None
+
+    results = [
+        ConnectivityTestResult("failed", None, "first failure", ""),
+        ConnectivityTestResult("failed", None, "final failure", ""),
+    ]
+
+    async def fake_run_connectivity_test(*args, **kwargs):
+        return results.pop(0)
+
+    monkeypatch.setattr(scheduler_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(scheduler_module, "run_connectivity_test", fake_run_connectivity_test)
+    with SessionLocal() as db:
+        task = MonitoringTask(
+            name="watch retry failure",
+            enabled=True,
+            provider_id=provider_id,
+            provider_name_snapshot="Relay",
+            provider_base_url_snapshot="https://relay.example/v1",
+            model_id="gpt-watch",
+            client_profile=CLIENT_PROFILE_CODEX,
+            network_route="direct",
+            interval_minutes=5,
+            retry_attempts=2,
+            retry_interval_seconds=1,
+        )
+        db.add(task)
+        db.commit()
+        task_id = task.id
+
+    asyncio.run(scheduler_module.execute_monitoring_task_run(task_id, fernet=fernet))
+
+    with SessionLocal() as db:
+        check = db.scalar(select(MonitoringCheck).where(MonitoringCheck.task_id == task_id))
+        assert check is not None
+        assert check.status == "failed"
+        assert check.error_message == "final failure"
+        assert check.attempt_count == 2
+    client.close()
+
+
+def test_monitoring_retries_failed_telegram_notification_without_rerunning_api(monkeypatch) -> None:
+    client = setup_client()
+    provider_id = create_provider(client)
+    authorize_background()
+    fernet = monitoring_fernet()
+    api_calls = 0
+    telegram_calls = 0
+    sleeps: list[int] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    async def fake_run_connectivity_test(*args, **kwargs):
+        nonlocal api_calls
+        api_calls += 1
+        return ConnectivityTestResult("success", 12, "", '{"result":"pong"}')
+
+    async def fake_post_telegram_message(*, bot_token, chat_id, text, proxy_url=None):
+        nonlocal telegram_calls
+        telegram_calls += 1
+        if telegram_calls < 3:
+            raise RuntimeError("TG down")
+
+    monkeypatch.setattr(scheduler_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(notifications_module, "post_telegram_message", fake_post_telegram_message)
+    monkeypatch.setattr(scheduler_module, "run_connectivity_test", fake_run_connectivity_test)
+    with SessionLocal() as db:
+        from app.notifications import SETTING_TELEGRAM_BOT_TOKEN, SETTING_TELEGRAM_CHAT_ID, SETTING_TELEGRAM_ENABLED
+
+        set_setting(db, SETTING_TELEGRAM_ENABLED, "true")
+        set_setting(db, SETTING_TELEGRAM_BOT_TOKEN, encrypt_secret_with_fernet("123:token", fernet))
+        set_setting(db, SETTING_TELEGRAM_CHAT_ID, encrypt_secret_with_fernet("-100", fernet))
+        task = MonitoringTask(
+            name="watch tg retry",
+            enabled=True,
+            provider_id=provider_id,
+            provider_name_snapshot="Relay",
+            provider_base_url_snapshot="https://relay.example/v1",
+            model_id="gpt-watch",
+            client_profile=CLIENT_PROFILE_CODEX,
+            network_route="direct",
+            interval_minutes=5,
+            retry_attempts=3,
+            retry_interval_seconds=1,
+        )
+        db.add(task)
+        db.commit()
+        task_id = task.id
+
+    asyncio.run(scheduler_module.execute_monitoring_task_run(task_id, fernet=fernet))
+
+    with SessionLocal() as db:
+        check = db.scalar(select(MonitoringCheck).where(MonitoringCheck.task_id == task_id))
+        assert check is not None
+        assert check.status == "success"
+        assert check.attempt_count == 1
+        assert check.notification_status == "sent"
+        assert check.notification_attempt_count == 3
+    assert api_calls == 1
+    assert telegram_calls == 3
+    assert sleeps == [1, 1]
+    client.close()
+
+
+def test_monitoring_records_failed_telegram_after_retry_exhaustion(monkeypatch) -> None:
+    client = setup_client()
+    provider_id = create_provider(client)
+    authorize_background()
+    fernet = monitoring_fernet()
+
+    async def fake_sleep(seconds):
+        return None
+
+    async def fake_run_connectivity_test(*args, **kwargs):
+        return ConnectivityTestResult("success", 12, "", '{"result":"pong"}')
+
+    async def fake_post_telegram_message(*, bot_token, chat_id, text, proxy_url=None):
+        raise RuntimeError("TG still down")
+
+    monkeypatch.setattr(scheduler_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(notifications_module, "post_telegram_message", fake_post_telegram_message)
+    monkeypatch.setattr(scheduler_module, "run_connectivity_test", fake_run_connectivity_test)
+    with SessionLocal() as db:
+        from app.notifications import SETTING_TELEGRAM_BOT_TOKEN, SETTING_TELEGRAM_CHAT_ID, SETTING_TELEGRAM_ENABLED
+
+        set_setting(db, SETTING_TELEGRAM_ENABLED, "true")
+        set_setting(db, SETTING_TELEGRAM_BOT_TOKEN, encrypt_secret_with_fernet("123:token", fernet))
+        set_setting(db, SETTING_TELEGRAM_CHAT_ID, encrypt_secret_with_fernet("-100", fernet))
+        task = MonitoringTask(
+            name="watch tg failure",
+            enabled=True,
+            provider_id=provider_id,
+            provider_name_snapshot="Relay",
+            provider_base_url_snapshot="https://relay.example/v1",
+            model_id="gpt-watch",
+            client_profile=CLIENT_PROFILE_CODEX,
+            network_route="direct",
+            interval_minutes=5,
+            retry_attempts=2,
+            retry_interval_seconds=1,
+        )
+        db.add(task)
+        db.commit()
+        task_id = task.id
+
+    asyncio.run(scheduler_module.execute_monitoring_task_run(task_id, fernet=fernet))
+
+    with SessionLocal() as db:
+        check = db.scalar(select(MonitoringCheck).where(MonitoringCheck.task_id == task_id))
+        assert check is not None
+        assert check.notification_status == "failed"
+        assert check.notification_attempt_count == 2
+        assert check.notification_error == "RuntimeError: TG still down"
+    client.close()
+
+
 def test_monitoring_detects_disabled_provider_but_skips_archived_provider(monkeypatch) -> None:
     client = setup_client()
     provider_id = create_provider(client, enabled=False)
@@ -218,6 +475,8 @@ def test_monitoring_detects_disabled_provider_but_skips_archived_provider(monkey
             client_profile=CLIENT_PROFILE_CODEX,
             network_route="direct",
             interval_minutes=5,
+            retry_attempts=3,
+            retry_interval_seconds=1,
         )
         db.add(task)
         db.commit()
@@ -236,6 +495,7 @@ def test_monitoring_detects_disabled_provider_but_skips_archived_provider(monkey
             db.scalars(select(MonitoringCheck).where(MonitoringCheck.task_id == task_id).order_by(MonitoringCheck.id))
         )
         assert [check.status for check in checks] == ["success", "skipped"]
+        assert [check.attempt_count for check in checks] == [1, 1]
         assert checks[1].error_message == "中转站已归档。"
     assert calls == 1
     client.close()
@@ -309,7 +569,7 @@ def test_telegram_api_error_message_uses_safe_description() -> None:
     assert "sendMessage" not in message
 
 
-def test_backup_v7_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_reset) -> None:
+def test_backup_v8_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_reset) -> None:
     client = setup_client()
     provider_id = create_provider(client)
     client.post(
@@ -326,16 +586,20 @@ def test_backup_v7_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_r
             "client_profile": CLIENT_PROFILE_CODEX,
             "network_route": "direct",
             "interval_minutes": "5",
+            "retry_attempts": "4",
+            "retry_interval_seconds": "12",
         },
         follow_redirects=False,
     )
     assert created.status_code == 303
 
     public_export = client.post("/export", data={"password": ""}).json()
-    assert public_export["version"] == 7
+    assert public_export["version"] == 8
     assert public_export["telegram"]["has_credentials"] is True
     assert "bot_token" not in public_export["telegram"]
     assert public_export["monitoring_tasks"][0]["name"] == "watch relay"
+    assert public_export["monitoring_tasks"][0]["retry_attempts"] == 4
+    assert public_export["monitoring_tasks"][0]["retry_interval_seconds"] == 12
 
     secret_export = client.post(
         "/export",
@@ -359,5 +623,53 @@ def test_backup_v7_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_r
         assert task.enabled is False
         assert task.next_run_at is None
         assert task.model_id == "gpt-watch"
+        assert task.retry_attempts == 4
+        assert task.retry_interval_seconds == 12
         assert get_setting(db, "telegram_bot_token_encrypted")
     restored_client.close()
+
+
+def test_old_backup_import_defaults_monitoring_retry_fields() -> None:
+    client = setup_client()
+    legacy_backup = {
+        "version": 7,
+        "providers": [
+            {
+                "name": "Relay",
+                "base_url": "https://relay.example/v1",
+                "api_key": "sk-test-secret",
+                "notes": "",
+                "enabled": True,
+                "client_profile": "openai_chat",
+            }
+        ],
+        "proxies": [],
+        "groups": [],
+        "schedules": [],
+        "monitoring_tasks": [
+            {
+                "name": "watch relay",
+                "enabled": True,
+                "provider": {"name": "Relay", "base_url": "https://relay.example/v1"},
+                "model_id": "gpt-watch",
+                "client_profile": CLIENT_PROFILE_CODEX,
+                "network_route": "direct",
+                "interval_minutes": 5,
+            }
+        ],
+        "telegram": {},
+    }
+
+    imported = client.post(
+        "/import",
+        files={"file": ("backup.json", json.dumps(legacy_backup).encode("utf-8"), "application/json")},
+        follow_redirects=False,
+    )
+
+    assert imported.status_code == 303
+    with SessionLocal() as db:
+        task = db.scalar(select(MonitoringTask).where(MonitoringTask.name == "watch relay"))
+        assert task is not None
+        assert task.retry_attempts == 1
+        assert task.retry_interval_seconds == 10
+    client.close()

@@ -83,7 +83,11 @@ from .proxy_support import (
 )
 from .scheduler import (
     MONITORING_MAX_INTERVAL_MINUTES,
+    MONITORING_MAX_RETRY_ATTEMPTS,
+    MONITORING_MAX_RETRY_INTERVAL_SECONDS,
     MONITORING_MIN_INTERVAL_MINUTES,
+    MONITORING_MIN_RETRY_ATTEMPTS,
+    MONITORING_MIN_RETRY_INTERVAL_SECONDS,
     calculate_monitoring_next_run,
     calculate_next_run,
     enqueue_monitoring_task_run,
@@ -1741,6 +1745,10 @@ def monitoring_page_context(
         "client_profile_labels": CLIENT_PROFILE_LABELS,
         "min_interval": MONITORING_MIN_INTERVAL_MINUTES,
         "max_interval": MONITORING_MAX_INTERVAL_MINUTES,
+        "min_retry_attempts": MONITORING_MIN_RETRY_ATTEMPTS,
+        "max_retry_attempts": MONITORING_MAX_RETRY_ATTEMPTS,
+        "min_retry_interval_seconds": MONITORING_MIN_RETRY_INTERVAL_SECONDS,
+        "max_retry_interval_seconds": MONITORING_MAX_RETRY_INTERVAL_SECONDS,
     }
 
 
@@ -1753,6 +1761,8 @@ def parse_monitoring_task_form(
     client_profile: str,
     network_route: str,
     interval_minutes: str,
+    retry_attempts: str = "1",
+    retry_interval_seconds: str = "10",
     current_route: str | None = None,
 ) -> tuple[dict[str, Any], list[str], Provider | None]:
     errors: list[str] = []
@@ -1766,6 +1776,14 @@ def parse_monitoring_task_form(
         parsed_interval = int(interval_minutes)
     except ValueError:
         parsed_interval = None
+    try:
+        parsed_retry_attempts = int(retry_attempts)
+    except ValueError:
+        parsed_retry_attempts = None
+    try:
+        parsed_retry_interval_seconds = int(retry_interval_seconds)
+    except ValueError:
+        parsed_retry_interval_seconds = None
     provider = db.get(Provider, parsed_provider_id) if parsed_provider_id is not None else None
     if not clean_name:
         errors.append("任务名称不能为空。")
@@ -1783,6 +1801,13 @@ def parse_monitoring_task_form(
         errors.append("客户端模式无效。")
     if parsed_interval is None or not MONITORING_MIN_INTERVAL_MINUTES <= parsed_interval <= MONITORING_MAX_INTERVAL_MINUTES:
         errors.append("检测间隔必须在 1 到 1440 分钟之间。")
+    if parsed_retry_attempts is None or not MONITORING_MIN_RETRY_ATTEMPTS <= parsed_retry_attempts <= MONITORING_MAX_RETRY_ATTEMPTS:
+        errors.append("尝试次数必须在 1 到 5 次之间。")
+    if (
+        parsed_retry_interval_seconds is None
+        or not MONITORING_MIN_RETRY_INTERVAL_SECONDS <= parsed_retry_interval_seconds <= MONITORING_MAX_RETRY_INTERVAL_SECONDS
+    ):
+        errors.append("重试间隔必须在 1 到 300 秒之间。")
     route_error = validate_test_network_route(db, network_route, current_route)
     if route_error:
         errors.append(route_error)
@@ -1793,6 +1818,8 @@ def parse_monitoring_task_form(
         "client_profile": client_profile,
         "network_route": network_route,
         "interval_minutes": parsed_interval,
+        "retry_attempts": parsed_retry_attempts,
+        "retry_interval_seconds": parsed_retry_interval_seconds,
     }
     return values, errors, provider
 
@@ -1824,6 +1851,8 @@ def apply_monitoring_task_values(
     task.client_profile = values["client_profile"]
     task.network_route = values["network_route"]
     task.interval_minutes = values["interval_minutes"]
+    task.retry_attempts = values["retry_attempts"]
+    task.retry_interval_seconds = values["retry_interval_seconds"]
     task.enabled = enabled
     if old_config != new_config:
         task.current_success_notified = False
@@ -1941,6 +1970,8 @@ def monitoring_task_create(
     client_profile: Annotated[str, Form()] = CLIENT_PROFILE_OPENAI_CHAT,
     network_route: Annotated[str, Form()] = "default",
     interval_minutes: Annotated[str, Form()] = "5",
+    retry_attempts: Annotated[str, Form()] = "1",
+    retry_interval_seconds: Annotated[str, Form()] = "10",
     enabled: Annotated[str | None, Form()] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
@@ -1952,6 +1983,8 @@ def monitoring_task_create(
         client_profile=client_profile,
         network_route=network_route,
         interval_minutes=interval_minutes,
+        retry_attempts=retry_attempts,
+        retry_interval_seconds=retry_interval_seconds,
     )
     should_enable = enabled == "on"
     if should_enable and scheduler_vault_state() != "ready":
@@ -1990,6 +2023,10 @@ def monitoring_task_edit_page(
             "client_profile_labels": CLIENT_PROFILE_LABELS,
             "min_interval": MONITORING_MIN_INTERVAL_MINUTES,
             "max_interval": MONITORING_MAX_INTERVAL_MINUTES,
+            "min_retry_attempts": MONITORING_MIN_RETRY_ATTEMPTS,
+            "max_retry_attempts": MONITORING_MAX_RETRY_ATTEMPTS,
+            "min_retry_interval_seconds": MONITORING_MIN_RETRY_INTERVAL_SECONDS,
+            "max_retry_interval_seconds": MONITORING_MAX_RETRY_INTERVAL_SECONDS,
         },
     )
 
@@ -2005,6 +2042,8 @@ def monitoring_task_update(
     client_profile: Annotated[str, Form()] = CLIENT_PROFILE_OPENAI_CHAT,
     network_route: Annotated[str, Form()] = "default",
     interval_minutes: Annotated[str, Form()] = "5",
+    retry_attempts: Annotated[str, Form()] = "1",
+    retry_interval_seconds: Annotated[str, Form()] = "10",
     enabled: Annotated[str | None, Form()] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
@@ -2017,6 +2056,8 @@ def monitoring_task_update(
         client_profile=client_profile,
         network_route=network_route,
         interval_minutes=interval_minutes,
+        retry_attempts=retry_attempts,
+        retry_interval_seconds=retry_interval_seconds,
         current_route=task.network_route,
     )
     should_enable = enabled == "on"
@@ -2035,6 +2076,10 @@ def monitoring_task_update(
                 "client_profile_labels": CLIENT_PROFILE_LABELS,
                 "min_interval": MONITORING_MIN_INTERVAL_MINUTES,
                 "max_interval": MONITORING_MAX_INTERVAL_MINUTES,
+                "min_retry_attempts": MONITORING_MIN_RETRY_ATTEMPTS,
+                "max_retry_attempts": MONITORING_MAX_RETRY_ATTEMPTS,
+                "min_retry_interval_seconds": MONITORING_MIN_RETRY_INTERVAL_SECONDS,
+                "max_retry_interval_seconds": MONITORING_MAX_RETRY_INTERVAL_SECONDS,
             },
             400,
         )
@@ -2216,7 +2261,7 @@ def export_json(
             decrypt_secret_with_fernet(encrypted_chat_id, fernet) if encrypted_chat_id else ""
         )
     payload = {
-        "version": 7,
+        "version": 8,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "contains_secrets": include_secret_values,
         "groups": [],
@@ -2266,6 +2311,8 @@ def export_json(
                 "client_profile": task.client_profile,
                 "network_route": serialize_test_network_route(db, task.network_route),
                 "interval_minutes": task.interval_minutes,
+                "retry_attempts": task.retry_attempts,
+                "retry_interval_seconds": task.retry_interval_seconds,
             }
         )
 
@@ -2639,6 +2686,8 @@ async def import_json(
             client_profile=str(item.get("client_profile") or CLIENT_PROFILE_OPENAI_CHAT),
             network_route=monitoring_route,
             interval_minutes=str(item.get("interval_minutes") or "5"),
+            retry_attempts=str(item.get("retry_attempts") or "1"),
+            retry_interval_seconds=str(item.get("retry_interval_seconds") or "10"),
         )
         if task_errors or parsed_provider is None:
             errors.append(f"监控任务第 {index} 条：{' '.join(task_errors)}")

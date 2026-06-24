@@ -36,6 +36,10 @@ MIN_INTERVAL_MINUTES = 15
 MAX_INTERVAL_MINUTES = 10_080
 MONITORING_MIN_INTERVAL_MINUTES = 1
 MONITORING_MAX_INTERVAL_MINUTES = 1_440
+MONITORING_MIN_RETRY_ATTEMPTS = 1
+MONITORING_MAX_RETRY_ATTEMPTS = 5
+MONITORING_MIN_RETRY_INTERVAL_SECONDS = 1
+MONITORING_MAX_RETRY_INTERVAL_SECONDS = 300
 SCHEDULE_TARGETS = {"all", "group", "providers"}
 SCHEDULE_KINDS = {"interval", "daily"}
 SCHEDULER_POLL_SECONDS = 15
@@ -100,6 +104,20 @@ def calculate_monitoring_next_run(task: MonitoringTask, now: datetime | None = N
     while candidate <= current:
         candidate += timedelta(minutes=interval)
     return candidate
+
+
+def monitoring_retry_attempts(task: MonitoringTask) -> int:
+    return max(
+        MONITORING_MIN_RETRY_ATTEMPTS,
+        min(MONITORING_MAX_RETRY_ATTEMPTS, task.retry_attempts or MONITORING_MIN_RETRY_ATTEMPTS),
+    )
+
+
+def monitoring_retry_interval_seconds(task: MonitoringTask) -> int:
+    return max(
+        MONITORING_MIN_RETRY_INTERVAL_SECONDS,
+        min(MONITORING_MAX_RETRY_INTERVAL_SECONDS, task.retry_interval_seconds or 10),
+    )
 
 
 def validate_schedule_values(
@@ -264,9 +282,11 @@ def _monitoring_check_for_skipped(task: MonitoringTask, provider: Provider | Non
         network_route=task.network_route,
         status="skipped",
         latency_ms=None,
+        attempt_count=1,
         error_message=message,
         raw_response_excerpt="",
         notification_status="skipped",
+        notification_attempt_count=0,
         notification_error="",
         checked_at=utc_now(),
     )
@@ -308,6 +328,7 @@ async def _run_monitoring_check(task: MonitoringTask, provider: Provider, fernet
             network_route=route_label,
             status="failed",
             latency_ms=None,
+            attempt_count=1,
             error_message=preflight_error,
             raw_response_excerpt="",
             checked_at=checked_at,
@@ -333,6 +354,7 @@ async def _run_monitoring_check(task: MonitoringTask, provider: Provider, fernet
             network_route=route_label,
             status=result.status,
             latency_ms=result.latency_ms,
+            attempt_count=1,
             error_message=result.error_message,
             raw_response_excerpt=result.raw_response_excerpt,
             checked_at=checked_at,
@@ -350,10 +372,51 @@ async def _run_monitoring_check(task: MonitoringTask, provider: Provider, fernet
             network_route=route_label,
             status="failed",
             latency_ms=None,
+            attempt_count=1,
             error_message=detail,
             raw_response_excerpt="",
             checked_at=checked_at,
         )
+
+
+async def _run_monitoring_check_with_retries(
+    task: MonitoringTask,
+    provider: Provider,
+    fernet: Fernet,
+) -> MonitoringCheck:
+    attempts = monitoring_retry_attempts(task)
+    interval_seconds = monitoring_retry_interval_seconds(task)
+    last_check: MonitoringCheck | None = None
+    for attempt in range(1, attempts + 1):
+        check = await _run_monitoring_check(task, provider, fernet)
+        check.attempt_count = attempt
+        last_check = check
+        if check.status != "failed":
+            return check
+        if attempt < attempts:
+            await asyncio.sleep(interval_seconds)
+    assert last_check is not None
+    return last_check
+
+
+async def _send_monitoring_recovery_notification_with_retries(
+    db,
+    task: MonitoringTask,
+    check: MonitoringCheck,
+    fernet: Fernet,
+) -> tuple[bool, str, int]:
+    attempts = monitoring_retry_attempts(task)
+    interval_seconds = monitoring_retry_interval_seconds(task)
+    notification_error = ""
+    for attempt in range(1, attempts + 1):
+        notified, notification_error = await send_monitoring_recovery_notification(db, task, check, fernet)
+        if notified:
+            return notified, notification_error, attempt
+        if notification_error == "Telegram 通知未启用。":
+            return notified, notification_error, 0
+        if attempt < attempts:
+            await asyncio.sleep(interval_seconds)
+    return False, notification_error, attempts
 
 
 async def execute_monitoring_task_run(task_id: int, *, fernet: Fernet) -> None:
@@ -383,7 +446,7 @@ async def execute_monitoring_task_run(task_id: int, *, fernet: Fernet) -> None:
                         if provider.archived_at is not None:
                             check = _monitoring_check_for_skipped(task, provider, "中转站已归档。")
                         else:
-                            check = await _run_monitoring_check(task, provider, fernet)
+                            check = await _run_monitoring_check_with_retries(task, provider, fernet)
 
                 task.last_status = check.status
                 task.last_error = check.error_message
@@ -394,9 +457,14 @@ async def execute_monitoring_task_run(task_id: int, *, fernet: Fernet) -> None:
                         check.notification_status = "skipped"
                         check.notification_error = "当前成功周期已通知。"
                     else:
-                        notified, notification_error = await send_monitoring_recovery_notification(
+                        (
+                            notified,
+                            notification_error,
+                            notification_attempt_count,
+                        ) = await _send_monitoring_recovery_notification_with_retries(
                             db, task, check, fernet
                         )
+                        check.notification_attempt_count = notification_attempt_count
                         if notified:
                             check.notification_status = "sent"
                             check.notification_error = ""

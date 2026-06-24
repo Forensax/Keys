@@ -163,6 +163,10 @@ def ensure_monitoring_columns(bind: Engine = engine) -> None:
             "ALTER TABLE monitoring_tasks ADD COLUMN network_route VARCHAR(180) NOT NULL DEFAULT 'default'"
         ),
         "interval_minutes": "ALTER TABLE monitoring_tasks ADD COLUMN interval_minutes INTEGER NOT NULL DEFAULT 5",
+        "retry_attempts": "ALTER TABLE monitoring_tasks ADD COLUMN retry_attempts INTEGER NOT NULL DEFAULT 1",
+        "retry_interval_seconds": (
+            "ALTER TABLE monitoring_tasks ADD COLUMN retry_interval_seconds INTEGER NOT NULL DEFAULT 10"
+        ),
         "next_run_at": "ALTER TABLE monitoring_tasks ADD COLUMN next_run_at DATETIME",
         "last_status": "ALTER TABLE monitoring_tasks ADD COLUMN last_status VARCHAR(32) NOT NULL DEFAULT ''",
         "last_error": "ALTER TABLE monitoring_tasks ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
@@ -196,12 +200,16 @@ def ensure_monitoring_columns(bind: Engine = engine) -> None:
         ),
         "status": "ALTER TABLE monitoring_checks ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'failed'",
         "latency_ms": "ALTER TABLE monitoring_checks ADD COLUMN latency_ms INTEGER",
+        "attempt_count": "ALTER TABLE monitoring_checks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1",
         "error_message": "ALTER TABLE monitoring_checks ADD COLUMN error_message TEXT NOT NULL DEFAULT ''",
         "raw_response_excerpt": (
             "ALTER TABLE monitoring_checks ADD COLUMN raw_response_excerpt TEXT NOT NULL DEFAULT ''"
         ),
         "notification_status": (
             "ALTER TABLE monitoring_checks ADD COLUMN notification_status VARCHAR(32) NOT NULL DEFAULT 'not_sent'"
+        ),
+        "notification_attempt_count": (
+            "ALTER TABLE monitoring_checks ADD COLUMN notification_attempt_count INTEGER NOT NULL DEFAULT 0"
         ),
         "notification_error": (
             "ALTER TABLE monitoring_checks ADD COLUMN notification_error TEXT NOT NULL DEFAULT ''"
