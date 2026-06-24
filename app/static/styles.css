@@ -979,9 +979,58 @@ tr:last-child td {
 
 .schedule-table,
 .schedule-run-table,
-.monitoring-table,
 .monitoring-check-table {
   min-width: 1040px;
+}
+
+.monitoring-table {
+  min-width: 0;
+}
+
+.monitoring-table th:nth-child(1) {
+  width: 19%;
+}
+
+.monitoring-table th:nth-child(2) {
+  width: 16%;
+}
+
+.monitoring-table th:nth-child(3) {
+  width: 21%;
+}
+
+.monitoring-table th:nth-child(4) {
+  width: 16%;
+}
+
+.monitoring-table th:nth-child(5) {
+  width: 16%;
+}
+
+.monitoring-table th:nth-child(6) {
+  width: 12%;
+}
+
+.monitoring-table td {
+  overflow-wrap: anywhere;
+}
+
+.monitoring-table .action-cell {
+  overflow: visible;
+  white-space: normal;
+}
+
+.monitoring-table .schedule-actions {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.monitoring-table .task-name,
+.monitoring-table .task-provider {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .schedule-actions {

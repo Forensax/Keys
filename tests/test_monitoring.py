@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 from fastapi.testclient import TestClient
@@ -186,6 +187,29 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
         assert task.notify_on_recovery is True
         assert task.notify_on_failure is False
         task_id = task.id
+
+    task_page = client.get("/monitoring")
+    assert task_page.status_code == 200
+    table_start = task_page.text.index('<table class="monitoring-table">')
+    table_end = task_page.text.index("</table>", table_start)
+    task_table = task_page.text[table_start:table_end]
+    assert "<th>任务</th><th>模型</th><th>周期</th><th>状态</th><th>下次检测</th><th></th>" in task_table
+    assert "<th>中转站</th>" not in task_table
+    assert "<th>通知</th>" not in task_table
+    assert "<th>最近通知</th>" not in task_table
+    assert "watch relay" in task_table
+    assert "Relay" in task_table
+    assert "gpt-watch" in task_table
+    assert "恢复" in task_table
+    assert "立即检测" in task_table
+    assert "停用" in task_table
+    assert "编辑" in task_table
+    assert "删除" in task_table
+
+    styles = Path("app/static/styles.css").read_text(encoding="utf-8")
+    assert ".monitoring-table,\n.monitoring-check-table" not in styles
+    assert ".monitoring-table {\n  min-width: 0;" in styles
+    assert ".monitoring-check-table" in styles and "min-width: 1040px" in styles
 
     edit_page = client.get(f"/monitoring/tasks/{task_id}/edit")
     assert edit_page.status_code == 200
