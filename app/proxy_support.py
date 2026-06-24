@@ -64,8 +64,23 @@ def build_proxy_url(proxy: NetworkProxy, fernet: Fernet) -> str:
     return f"{proxy.scheme}://{auth}{host}:{proxy.port}"
 
 
+def _exception_message_chain(exc: BaseException) -> list[str]:
+    messages: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = str(current).strip()
+        if message:
+            messages.append(message)
+        current = current.__cause__ or current.__context__
+    return messages
+
+
 def sanitize_proxy_error(exc: Exception) -> str:
-    message = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^@\s/]+@", r"\1***@", str(exc))
+    messages = _exception_message_chain(exc)
+    message = "；".join(messages) if messages else "连接失败，未返回具体错误"
+    message = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^@\s/]+@", r"\1***@", message)
     return f"{type(exc).__name__}: {message}"[:500]
 
 

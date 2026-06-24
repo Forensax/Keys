@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from cryptography.fernet import Fernet
 
 from app.models import NetworkProxy
@@ -42,3 +43,15 @@ def test_proxy_error_sanitizer_removes_credentials() -> None:
     assert "user" not in sanitized
     assert "secret" not in sanitized
     assert "socks5://***@proxy.example:1080" in sanitized
+
+
+def test_proxy_error_sanitizer_expands_empty_connect_error_cause() -> None:
+    try:
+        raise OSError("proxy refused connection")
+    except OSError as cause:
+        error = httpx.ConnectError("")
+        error.__cause__ = cause
+
+    sanitized = sanitize_proxy_error(error)
+
+    assert sanitized == "ConnectError: proxy refused connection"

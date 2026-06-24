@@ -35,7 +35,10 @@ def _cleanup_worker_db_files() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     engine.dispose()
     for path in TEST_DB_SIDECARS:
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except PermissionError:
+            pass
 
 
 def _reset_scheduler_state() -> None:
