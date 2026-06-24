@@ -6,24 +6,36 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet
 from sqlalchemy import delete, select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import object_session, selectinload
 
 from .config import settings
 from .db import SessionLocal
 from .models import (
     ConnectivityTest,
+    MonitoringCheck,
+    MonitoringTask,
     Provider,
     ScheduledRun,
     ScheduledTask,
     ScheduledTaskProvider,
     utc_now,
 )
-from .security import SETTING_SCHEDULER_WRAPPED_VAULT_KEY, get_scheduler_fernet, get_setting
-from .test_runner import run_provider_connectivity_test
+from .notifications import send_monitoring_recovery_notification
+from .openai_compat import VALID_CLIENT_PROFILES, run_connectivity_test
+from .proxy_support import sanitize_proxy_error
+from .security import (
+    SETTING_SCHEDULER_WRAPPED_VAULT_KEY,
+    decrypt_api_key_with_fernet,
+    get_scheduler_fernet,
+    get_setting,
+)
+from .test_runner import network_route_snapshot, resolve_network_route_with_fernet, run_provider_connectivity_test
 
 
 MIN_INTERVAL_MINUTES = 15
 MAX_INTERVAL_MINUTES = 10_080
+MONITORING_MIN_INTERVAL_MINUTES = 1
+MONITORING_MAX_INTERVAL_MINUTES = 1_440
 SCHEDULE_TARGETS = {"all", "group", "providers"}
 SCHEDULE_KINDS = {"interval", "daily"}
 SCHEDULER_POLL_SECONDS = 15
@@ -31,7 +43,9 @@ SCHEDULED_HISTORY_DAYS = 180
 
 _loop_task: asyncio.Task[None] | None = None
 _worker_tasks: set[asyncio.Task[None]] = set()
+_monitoring_worker_tasks: set[asyncio.Task[None]] = set()
 _running_task_ids: set[int] = set()
+_running_monitoring_task_ids: set[int] = set()
 _provider_locks: dict[int, asyncio.Lock] = {}
 _test_semaphore: asyncio.Semaphore | None = None
 _stop_event: asyncio.Event | None = None
@@ -64,6 +78,21 @@ def calculate_next_run(task: ScheduledTask, now: datetime | None = None) -> date
         return candidate.astimezone(timezone.utc)
 
     interval = max(MIN_INTERVAL_MINUTES, min(MAX_INTERVAL_MINUTES, task.interval_minutes or 60))
+    existing = as_utc(task.next_run_at)
+    if existing is None:
+        return current + timedelta(minutes=interval)
+    candidate = existing
+    while candidate <= current:
+        candidate += timedelta(minutes=interval)
+    return candidate
+
+
+def calculate_monitoring_next_run(task: MonitoringTask, now: datetime | None = None) -> datetime:
+    current = as_utc(now or utc_now()) or utc_now()
+    interval = max(
+        MONITORING_MIN_INTERVAL_MINUTES,
+        min(MONITORING_MAX_INTERVAL_MINUTES, task.interval_minutes or 5),
+    )
     existing = as_utc(task.next_run_at)
     if existing is None:
         return current + timedelta(minutes=interval)
@@ -223,6 +252,171 @@ async def _test_provider(provider_id: int, run_id: int, fernet: Fernet) -> str:
             return test.status
 
 
+def _monitoring_check_for_skipped(task: MonitoringTask, provider: Provider | None, message: str) -> MonitoringCheck:
+    return MonitoringCheck(
+        task_id=task.id,
+        task_name_snapshot=task.name,
+        provider_id=provider.id if provider else None,
+        provider_name_snapshot=provider.name if provider else task.provider_name_snapshot,
+        provider_base_url_snapshot=provider.base_url if provider else task.provider_base_url_snapshot,
+        model_id=task.model_id,
+        client_profile=task.client_profile,
+        network_route=task.network_route,
+        status="skipped",
+        latency_ms=None,
+        error_message=message,
+        raw_response_excerpt="",
+        notification_status="skipped",
+        notification_error="",
+        checked_at=utc_now(),
+    )
+
+
+async def _run_monitoring_check(task: MonitoringTask, provider: Provider, fernet: Fernet) -> MonitoringCheck:
+    clean_model_id = task.model_id.strip()
+    stored_model_id = clean_model_id or "（未配置模型）"
+    stored_profile = task.client_profile if task.client_profile in VALID_CLIENT_PROFILES else provider.client_profile
+    db = object_session(task)
+    if db is None:
+        raise RuntimeError("监控任务未绑定数据库会话。")
+    route_label = network_route_snapshot(db, provider, task.network_route)
+    preflight_error = ""
+    if not clean_model_id:
+        preflight_error = "未配置测试模型。"
+    elif len(clean_model_id) > 260:
+        preflight_error = "模型名称不能超过 260 个字符。"
+    elif task.client_profile not in VALID_CLIENT_PROFILES:
+        preflight_error = "客户端模式无效。"
+
+    proxy_url: str | None = None
+    if not preflight_error:
+        try:
+            proxy_url, route_label = resolve_network_route_with_fernet(db, provider, task.network_route, fernet)
+        except Exception as exc:
+            preflight_error = str(exc)
+
+    checked_at = utc_now()
+    if preflight_error:
+        return MonitoringCheck(
+            task_id=task.id,
+            task_name_snapshot=task.name,
+            provider_id=provider.id,
+            provider_name_snapshot=provider.name,
+            provider_base_url_snapshot=provider.base_url,
+            model_id=stored_model_id,
+            client_profile=stored_profile,
+            network_route=route_label,
+            status="failed",
+            latency_ms=None,
+            error_message=preflight_error,
+            raw_response_excerpt="",
+            checked_at=checked_at,
+        )
+
+    try:
+        api_key = decrypt_api_key_with_fernet(provider.encrypted_api_key, fernet)
+        result = await run_connectivity_test(
+            provider.base_url,
+            api_key,
+            clean_model_id,
+            task.client_profile,
+            proxy_url=proxy_url,
+        )
+        return MonitoringCheck(
+            task_id=task.id,
+            task_name_snapshot=task.name,
+            provider_id=provider.id,
+            provider_name_snapshot=provider.name,
+            provider_base_url_snapshot=provider.base_url,
+            model_id=clean_model_id,
+            client_profile=task.client_profile,
+            network_route=route_label,
+            status=result.status,
+            latency_ms=result.latency_ms,
+            error_message=result.error_message,
+            raw_response_excerpt=result.raw_response_excerpt,
+            checked_at=checked_at,
+        )
+    except Exception as exc:
+        detail = sanitize_proxy_error(exc) if proxy_url else str(exc)
+        return MonitoringCheck(
+            task_id=task.id,
+            task_name_snapshot=task.name,
+            provider_id=provider.id,
+            provider_name_snapshot=provider.name,
+            provider_base_url_snapshot=provider.base_url,
+            model_id=clean_model_id,
+            client_profile=task.client_profile,
+            network_route=route_label,
+            status="failed",
+            latency_ms=None,
+            error_message=detail,
+            raw_response_excerpt="",
+            checked_at=checked_at,
+        )
+
+
+async def execute_monitoring_task_run(task_id: int, *, fernet: Fernet) -> None:
+    try:
+        global _test_semaphore
+        if _test_semaphore is None:
+            _test_semaphore = asyncio.Semaphore(5)
+        async with _test_semaphore:
+            with SessionLocal() as db:
+                task = db.scalar(
+                    select(MonitoringTask)
+                    .where(MonitoringTask.id == task_id)
+                    .options(selectinload(MonitoringTask.provider))
+                )
+                if task is None:
+                    return
+                provider = db.scalar(
+                    select(Provider)
+                    .where(Provider.id == task.provider_id)
+                    .options(selectinload(Provider.default_proxy))
+                ) if task.provider_id is not None else None
+                if provider is None:
+                    check = _monitoring_check_for_skipped(task, None, "中转站已删除。")
+                else:
+                    lock = _provider_locks.setdefault(provider.id, asyncio.Lock())
+                    async with lock:
+                        if provider.archived_at is not None:
+                            check = _monitoring_check_for_skipped(task, provider, "中转站已归档。")
+                        else:
+                            check = await _run_monitoring_check(task, provider, fernet)
+
+                task.last_status = check.status
+                task.last_error = check.error_message
+                task.last_latency_ms = check.latency_ms
+                task.last_checked_at = check.checked_at
+                if check.status == "success":
+                    if task.current_success_notified:
+                        check.notification_status = "skipped"
+                        check.notification_error = "当前成功周期已通知。"
+                    else:
+                        notified, notification_error = await send_monitoring_recovery_notification(
+                            db, task, check, fernet
+                        )
+                        if notified:
+                            check.notification_status = "sent"
+                            check.notification_error = ""
+                            task.current_success_notified = True
+                            task.last_notified_at = utc_now()
+                        else:
+                            check.notification_status = (
+                                "skipped" if notification_error == "Telegram 通知未启用。" else "failed"
+                            )
+                            check.notification_error = notification_error
+                else:
+                    task.current_success_notified = False
+                    if not check.notification_status:
+                        check.notification_status = "skipped"
+                db.add(check)
+                db.commit()
+    finally:
+        _running_monitoring_task_ids.discard(task_id)
+
+
 async def execute_task_run(
     task_id: int,
     *,
@@ -306,6 +500,16 @@ def enqueue_task_run(
     return True
 
 
+def enqueue_monitoring_task_run(task_id: int, *, fernet: Fernet) -> bool:
+    if task_id in _running_monitoring_task_ids:
+        return False
+    _running_monitoring_task_ids.add(task_id)
+    worker = asyncio.create_task(execute_monitoring_task_run(task_id, fernet=fernet))
+    _monitoring_worker_tasks.add(worker)
+    worker.add_done_callback(_monitoring_worker_tasks.discard)
+    return True
+
+
 async def scan_due_tasks() -> None:
     if not settings.session_secret_configured:
         return
@@ -338,6 +542,37 @@ async def scan_due_tasks() -> None:
         enqueue_task_run(task_id, trigger="scheduled", fernet=fernet, scheduled_for=scheduled_for)
 
 
+async def scan_due_monitoring_tasks() -> None:
+    if not settings.session_secret_configured:
+        return
+    now = utc_now()
+    with SessionLocal() as db:
+        fernet = get_scheduler_fernet(db, settings.session_secret)
+        if fernet is None:
+            return
+        task_ids = list(
+            db.scalars(
+                select(MonitoringTask.id)
+                .where(
+                    MonitoringTask.enabled.is_(True),
+                    MonitoringTask.next_run_at.is_not(None),
+                    MonitoringTask.next_run_at <= now,
+                )
+                .order_by(MonitoringTask.next_run_at, MonitoringTask.id)
+            ).all()
+        )
+        due: list[int] = []
+        for task_id in task_ids:
+            task = db.get(MonitoringTask, task_id)
+            if task is None or task.id in _running_monitoring_task_ids:
+                continue
+            task.next_run_at = calculate_monitoring_next_run(task, now)
+            due.append(task.id)
+        db.commit()
+    for task_id in due:
+        enqueue_monitoring_task_run(task_id, fernet=fernet)
+
+
 def cleanup_scheduled_history(now: datetime | None = None) -> None:
     cutoff = (as_utc(now or utc_now()) or utc_now()) - timedelta(days=SCHEDULED_HISTORY_DAYS)
     with SessionLocal() as db:
@@ -358,6 +593,7 @@ async def _scheduler_loop() -> None:
     while _stop_event is not None and not _stop_event.is_set():
         try:
             await scan_due_tasks()
+            await scan_due_monitoring_tasks()
             if utc_now() - last_cleanup >= timedelta(days=1):
                 cleanup_scheduled_history()
                 last_cleanup = utc_now()
@@ -387,9 +623,15 @@ async def stop_scheduler() -> None:
         await _loop_task
     if _worker_tasks:
         await asyncio.gather(*list(_worker_tasks), return_exceptions=True)
+    if _monitoring_worker_tasks:
+        await asyncio.gather(*list(_monitoring_worker_tasks), return_exceptions=True)
     _loop_task = None
     _stop_event = None
 
 
 def task_is_running(task_id: int) -> bool:
     return task_id in _running_task_ids
+
+
+def monitoring_task_is_running(task_id: int) -> bool:
+    return task_id in _running_monitoring_task_ids

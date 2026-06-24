@@ -25,6 +25,8 @@ from .analytics import (
 from .db import get_db, init_db
 from .models import (
     ConnectivityTest,
+    MonitoringCheck,
+    MonitoringTask,
     NetworkProxy,
     Provider,
     ProviderGroup,
@@ -33,6 +35,14 @@ from .models import (
     ScheduledTask,
     ScheduledTaskProvider,
     utc_now,
+)
+from .notifications import (
+    SETTING_TELEGRAM_BOT_TOKEN,
+    SETTING_TELEGRAM_CHAT_ID,
+    SETTING_TELEGRAM_ENABLED,
+    SETTING_TELEGRAM_PROXY_ID,
+    read_telegram_config,
+    send_test_telegram_message,
 )
 from .openai_compat import (
     CLIENT_PROFILE_LABELS,
@@ -72,8 +82,13 @@ from .proxy_support import (
     validate_proxy_fields,
 )
 from .scheduler import (
+    MONITORING_MAX_INTERVAL_MINUTES,
+    MONITORING_MIN_INTERVAL_MINUTES,
+    calculate_monitoring_next_run,
     calculate_next_run,
+    enqueue_monitoring_task_run,
     enqueue_task_run,
+    monitoring_task_is_running,
     scheduler_vault_state,
     set_task_provider_links,
     start_scheduler,
@@ -1068,6 +1083,8 @@ def provider_delete(
         .where(ScheduledTaskProvider.provider_id == provider.id)
         .values(provider_id=None)
     )
+    db.execute(update(MonitoringTask).where(MonitoringTask.provider_id == provider.id).values(provider_id=None))
+    db.execute(update(MonitoringCheck).where(MonitoringCheck.provider_id == provider.id).values(provider_id=None))
     db.delete(provider)
     delete_group_if_empty(db, old_group_id)
     db.commit()
@@ -1453,6 +1470,24 @@ def apply_schedule_values(
     task.next_run_at = calculate_next_run(task) if enabled else None
 
 
+def prepare_enabled_background_tasks(db: Session) -> None:
+    for task in db.scalars(select(ScheduledTask).where(ScheduledTask.enabled.is_(True))).all():
+        if task.next_run_at is None:
+            task.next_run_at = calculate_next_run(task)
+    for task in db.scalars(select(MonitoringTask).where(MonitoringTask.enabled.is_(True))).all():
+        if task.next_run_at is None:
+            task.next_run_at = calculate_monitoring_next_run(task)
+
+
+def disable_background_tasks(db: Session) -> None:
+    for task in db.scalars(select(ScheduledTask)).all():
+        task.enabled = False
+        task.next_run_at = None
+    for task in db.scalars(select(MonitoringTask)).all():
+        task.enabled = False
+        task.next_run_at = None
+
+
 @app.get("/schedules", response_class=HTMLResponse)
 def schedules_page(
     request: Request,
@@ -1476,9 +1511,7 @@ def schedules_authorize(
         flash(request, "密码确认失败，后台密钥未授权。", "error")
         return redirect("/schedules")
     authorize_scheduler_vault(db, password, settings.session_secret)
-    for task in db.scalars(select(ScheduledTask).where(ScheduledTask.enabled.is_(True))).all():
-        if task.next_run_at is None:
-            task.next_run_at = calculate_next_run(task)
+    prepare_enabled_background_tasks(db)
     db.commit()
     flash(request, "后台密钥已授权，定时任务可在应用重启后继续运行。")
     return redirect("/schedules")
@@ -1491,11 +1524,9 @@ def schedules_lock(
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     clear_scheduler_vault(db)
-    for task in db.scalars(select(ScheduledTask)).all():
-        task.enabled = False
-        task.next_run_at = None
+    disable_background_tasks(db)
     db.commit()
-    flash(request, "后台密钥已锁定，所有定时任务已停用。")
+    flash(request, "后台密钥已锁定，所有后台任务已停用。")
     return redirect("/schedules")
 
 
@@ -1664,6 +1695,408 @@ def schedule_delete(
     return redirect("/schedules")
 
 
+def monitoring_task_or_404(db: Session, task_id: int) -> MonitoringTask:
+    task = db.scalar(
+        select(MonitoringTask)
+        .where(MonitoringTask.id == task_id)
+        .options(
+            selectinload(MonitoringTask.provider),
+            selectinload(MonitoringTask.checks),
+        )
+    )
+    if task is None:
+        raise HTTPException(status_code=404, detail="监控任务不存在。")
+    return task
+
+
+def monitoring_page_context(
+    db: Session,
+    *,
+    form_values: dict[str, Any] | None = None,
+    errors: list[str] | None = None,
+) -> dict[str, Any]:
+    tasks = list(
+        db.scalars(
+            select(MonitoringTask)
+            .options(selectinload(MonitoringTask.provider), selectinload(MonitoringTask.checks))
+            .order_by(MonitoringTask.created_at, MonitoringTask.id)
+        ).all()
+    )
+    recent_checks = list(
+        db.scalars(select(MonitoringCheck).order_by(MonitoringCheck.checked_at.desc()).limit(20)).all()
+    )
+    providers = list(
+        db.scalars(select(Provider).where(Provider.archived_at.is_(None)).order_by(Provider.name)).all()
+    )
+    return {
+        "tasks": tasks,
+        "recent_checks": recent_checks,
+        "providers": providers,
+        "proxies": all_proxies(db),
+        "telegram_config": read_telegram_config(db),
+        "vault_state": scheduler_vault_state(),
+        "task_is_running": monitoring_task_is_running,
+        "form_values": form_values or {},
+        "errors": errors or [],
+        "client_profile_labels": CLIENT_PROFILE_LABELS,
+        "min_interval": MONITORING_MIN_INTERVAL_MINUTES,
+        "max_interval": MONITORING_MAX_INTERVAL_MINUTES,
+    }
+
+
+def parse_monitoring_task_form(
+    db: Session,
+    *,
+    name: str,
+    provider_id: str,
+    model_id: str,
+    client_profile: str,
+    network_route: str,
+    interval_minutes: str,
+    current_route: str | None = None,
+) -> tuple[dict[str, Any], list[str], Provider | None]:
+    errors: list[str] = []
+    clean_name = name.strip()
+    clean_model = model_id.strip()
+    try:
+        parsed_provider_id = int(provider_id)
+    except ValueError:
+        parsed_provider_id = None
+    try:
+        parsed_interval = int(interval_minutes)
+    except ValueError:
+        parsed_interval = None
+    provider = db.get(Provider, parsed_provider_id) if parsed_provider_id is not None else None
+    if not clean_name:
+        errors.append("任务名称不能为空。")
+    elif len(clean_name) > 160:
+        errors.append("任务名称不能超过 160 个字符。")
+    if provider is None:
+        errors.append("请选择一个中转站。")
+    elif provider.archived_at is not None:
+        errors.append("不能监控已归档中转站。")
+    if not clean_model:
+        errors.append("模型名称不能为空。")
+    elif len(clean_model) > 260:
+        errors.append("模型名称不能超过 260 个字符。")
+    if client_profile not in VALID_CLIENT_PROFILES:
+        errors.append("客户端模式无效。")
+    if parsed_interval is None or not MONITORING_MIN_INTERVAL_MINUTES <= parsed_interval <= MONITORING_MAX_INTERVAL_MINUTES:
+        errors.append("检测间隔必须在 1 到 1440 分钟之间。")
+    route_error = validate_test_network_route(db, network_route, current_route)
+    if route_error:
+        errors.append(route_error)
+    values = {
+        "name": clean_name,
+        "provider_id": parsed_provider_id,
+        "model_id": clean_model,
+        "client_profile": client_profile,
+        "network_route": network_route,
+        "interval_minutes": parsed_interval,
+    }
+    return values, errors, provider
+
+
+def apply_monitoring_task_values(
+    task: MonitoringTask,
+    values: dict[str, Any],
+    provider: Provider,
+    *,
+    enabled: bool,
+) -> None:
+    old_config = (
+        task.provider_id,
+        task.model_id,
+        task.client_profile,
+        task.network_route,
+    )
+    new_config = (
+        provider.id,
+        values["model_id"],
+        values["client_profile"],
+        values["network_route"],
+    )
+    task.name = values["name"]
+    task.provider_id = provider.id
+    task.provider_name_snapshot = provider.name
+    task.provider_base_url_snapshot = provider.base_url
+    task.model_id = values["model_id"]
+    task.client_profile = values["client_profile"]
+    task.network_route = values["network_route"]
+    task.interval_minutes = values["interval_minutes"]
+    task.enabled = enabled
+    if old_config != new_config:
+        task.current_success_notified = False
+    task.next_run_at = calculate_monitoring_next_run(task) if enabled else None
+
+
+@app.get("/monitoring", response_class=HTMLResponse)
+def monitoring_page(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    return render(request, "monitoring.html", monitoring_page_context(db))
+
+
+@app.post("/monitoring/authorize")
+def monitoring_authorize(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    password: Annotated[str, Form()],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    if not settings.session_secret_configured:
+        flash(request, "必须在 .env 中显式设置稳定的 SESSION_SECRET 后才能启用后台任务。", "error")
+        return redirect("/monitoring")
+    if not password or not authenticate(db, password) or not check_session_password_proof(request, db, password):
+        flash(request, "密码确认失败，后台密钥未授权。", "error")
+        return redirect("/monitoring")
+    authorize_scheduler_vault(db, password, settings.session_secret)
+    prepare_enabled_background_tasks(db)
+    db.commit()
+    flash(request, "后台密钥已授权，监控任务可在应用重启后继续运行。")
+    return redirect("/monitoring")
+
+
+@app.post("/monitoring/lock")
+def monitoring_lock(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    clear_scheduler_vault(db)
+    disable_background_tasks(db)
+    db.commit()
+    flash(request, "后台密钥已锁定，所有后台任务已停用。")
+    return redirect("/monitoring")
+
+
+@app.post("/monitoring/telegram")
+def monitoring_telegram_save(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    bot_token: Annotated[str, Form()] = "",
+    chat_id: Annotated[str, Form()] = "",
+    proxy_id: Annotated[str, Form()] = "",
+    enabled: Annotated[str | None, Form()] = None,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    fernet = require_session_fernet(request)
+    clean_token = bot_token.strip()
+    clean_chat_id = chat_id.strip()
+    clean_proxy_id = proxy_id.strip()
+    if clean_proxy_id:
+        try:
+            proxy = db.get(NetworkProxy, int(clean_proxy_id))
+        except ValueError:
+            proxy = None
+        if proxy is None:
+            flash(request, "Telegram 代理不存在。", "error")
+            return redirect("/monitoring")
+        if not proxy.enabled:
+            flash(request, "不能选择已禁用的 Telegram 代理。", "error")
+            return redirect("/monitoring")
+    if clean_token:
+        set_setting(db, SETTING_TELEGRAM_BOT_TOKEN, encrypt_secret_with_fernet(clean_token, fernet))
+    if clean_chat_id:
+        set_setting(db, SETTING_TELEGRAM_CHAT_ID, encrypt_secret_with_fernet(clean_chat_id, fernet))
+    should_enable = enabled == "on"
+    has_credentials = bool(
+        (clean_token or get_setting(db, SETTING_TELEGRAM_BOT_TOKEN))
+        and (clean_chat_id or get_setting(db, SETTING_TELEGRAM_CHAT_ID))
+    )
+    if should_enable and not has_credentials:
+        flash(request, "启用 Telegram 前请先填写 Bot Token 和 Chat ID。", "error")
+        return redirect("/monitoring")
+    set_setting(db, SETTING_TELEGRAM_ENABLED, "true" if should_enable else "false")
+    set_setting(db, SETTING_TELEGRAM_PROXY_ID, clean_proxy_id)
+    db.commit()
+    flash(request, "Telegram 通知配置已保存。")
+    return redirect("/monitoring")
+
+
+@app.post("/monitoring/telegram/test")
+async def monitoring_telegram_test(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    try:
+        await send_test_telegram_message(db, require_session_fernet(request))
+    except Exception as exc:
+        flash(request, f"测试消息发送失败：{sanitize_proxy_error(exc)}", "error")
+        return redirect("/monitoring")
+    flash(request, "Telegram 测试消息已发送。")
+    return redirect("/monitoring")
+
+
+@app.post("/monitoring/tasks")
+def monitoring_task_create(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    name: Annotated[str, Form()] = "",
+    provider_id: Annotated[str, Form()] = "",
+    model_id: Annotated[str, Form()] = "",
+    client_profile: Annotated[str, Form()] = CLIENT_PROFILE_OPENAI_CHAT,
+    network_route: Annotated[str, Form()] = "default",
+    interval_minutes: Annotated[str, Form()] = "5",
+    enabled: Annotated[str | None, Form()] = None,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    values, errors, provider = parse_monitoring_task_form(
+        db,
+        name=name,
+        provider_id=provider_id,
+        model_id=model_id,
+        client_profile=client_profile,
+        network_route=network_route,
+        interval_minutes=interval_minutes,
+    )
+    should_enable = enabled == "on"
+    if should_enable and scheduler_vault_state() != "ready":
+        errors.append("请先授权后台密钥，再启用监控任务。")
+    if errors or provider is None:
+        return render(
+            request,
+            "monitoring.html",
+            monitoring_page_context(db, form_values={**values, "enabled": should_enable}, errors=errors),
+            400,
+        )
+    task = MonitoringTask()
+    apply_monitoring_task_values(task, values, provider, enabled=should_enable)
+    db.add(task)
+    db.commit()
+    flash(request, f"监控任务“{task.name}”已创建。")
+    return redirect("/monitoring")
+
+
+@app.get("/monitoring/tasks/{task_id}/edit", response_class=HTMLResponse)
+def monitoring_task_edit_page(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    task_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    task = monitoring_task_or_404(db, task_id)
+    return render(
+        request,
+        "monitoring_form.html",
+        {
+            "task": task,
+            "providers": list(db.scalars(select(Provider).where(Provider.archived_at.is_(None)).order_by(Provider.name)).all()),
+            "proxies": all_proxies(db),
+            "errors": [],
+            "client_profile_labels": CLIENT_PROFILE_LABELS,
+            "min_interval": MONITORING_MIN_INTERVAL_MINUTES,
+            "max_interval": MONITORING_MAX_INTERVAL_MINUTES,
+        },
+    )
+
+
+@app.post("/monitoring/tasks/{task_id}")
+def monitoring_task_update(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    task_id: int,
+    name: Annotated[str, Form()] = "",
+    provider_id: Annotated[str, Form()] = "",
+    model_id: Annotated[str, Form()] = "",
+    client_profile: Annotated[str, Form()] = CLIENT_PROFILE_OPENAI_CHAT,
+    network_route: Annotated[str, Form()] = "default",
+    interval_minutes: Annotated[str, Form()] = "5",
+    enabled: Annotated[str | None, Form()] = None,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    task = monitoring_task_or_404(db, task_id)
+    values, errors, provider = parse_monitoring_task_form(
+        db,
+        name=name,
+        provider_id=provider_id,
+        model_id=model_id,
+        client_profile=client_profile,
+        network_route=network_route,
+        interval_minutes=interval_minutes,
+        current_route=task.network_route,
+    )
+    should_enable = enabled == "on"
+    if should_enable and scheduler_vault_state() != "ready":
+        errors.append("请先授权后台密钥，再启用监控任务。")
+    if errors or provider is None:
+        return render(
+            request,
+            "monitoring_form.html",
+            {
+                "task": task,
+                "providers": list(db.scalars(select(Provider).where(Provider.archived_at.is_(None)).order_by(Provider.name)).all()),
+                "proxies": all_proxies(db),
+                "errors": errors,
+                "form_values": {**values, "enabled": should_enable},
+                "client_profile_labels": CLIENT_PROFILE_LABELS,
+                "min_interval": MONITORING_MIN_INTERVAL_MINUTES,
+                "max_interval": MONITORING_MAX_INTERVAL_MINUTES,
+            },
+            400,
+        )
+    apply_monitoring_task_values(task, values, provider, enabled=should_enable)
+    db.commit()
+    flash(request, f"监控任务“{task.name}”已更新。")
+    return redirect("/monitoring")
+
+
+@app.post("/monitoring/tasks/{task_id}/toggle")
+def monitoring_task_toggle(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    task_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    task = monitoring_task_or_404(db, task_id)
+    if not task.enabled and scheduler_vault_state() != "ready":
+        flash(request, "后台密钥尚未授权或已锁定，不能启用监控任务。", "error")
+        return redirect("/monitoring")
+    task.enabled = not task.enabled
+    task.next_run_at = calculate_monitoring_next_run(task) if task.enabled else None
+    db.commit()
+    flash(request, f"监控任务“{task.name}”已{'启用' if task.enabled else '停用'}。")
+    return redirect("/monitoring")
+
+
+@app.post("/monitoring/tasks/{task_id}/run")
+async def monitoring_task_run_now(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    task_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    task = monitoring_task_or_404(db, task_id)
+    fernet = get_scheduler_fernet(db, settings.session_secret) or require_session_fernet(request)
+    if enqueue_monitoring_task_run(task.id, fernet=fernet):
+        flash(request, f"监控任务“{task.name}”已开始立即检测。")
+    else:
+        flash(request, f"监控任务“{task.name}”正在运行，请稍后再试。", "error")
+    return redirect("/monitoring")
+
+
+@app.post("/monitoring/tasks/{task_id}/delete")
+def monitoring_task_delete(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    task_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    task = monitoring_task_or_404(db, task_id)
+    if monitoring_task_is_running(task.id):
+        flash(request, "监控任务正在运行，不能删除。", "error")
+        return redirect("/monitoring")
+    name = task.name
+    db.execute(update(MonitoringCheck).where(MonitoringCheck.task_id == task.id).values(task_id=None))
+    db.delete(task)
+    db.commit()
+    flash(request, f"监控任务“{name}”已删除，历史检测记录已保留。")
+    return redirect("/monitoring")
+
+
 @app.get("/statistics", response_class=HTMLResponse)
 def statistics_page(
     request: Request,
@@ -1761,14 +2194,37 @@ def export_json(
         )
         .order_by(ScheduledTask.name)
     ).all()
+    monitoring_tasks = db.scalars(
+        select(MonitoringTask)
+        .options(selectinload(MonitoringTask.provider))
+        .order_by(MonitoringTask.name)
+    ).all()
+    telegram_config = read_telegram_config(db)
+    telegram_proxy = db.get(NetworkProxy, telegram_config.proxy_id) if telegram_config.proxy_id is not None else None
+    telegram_payload: dict[str, Any] = {
+        "enabled": telegram_config.enabled,
+        "has_credentials": telegram_config.has_credentials,
+        "proxy": telegram_proxy.name if telegram_proxy else None,
+    }
+    if include_secret_values:
+        encrypted_token = get_setting(db, SETTING_TELEGRAM_BOT_TOKEN)
+        encrypted_chat_id = get_setting(db, SETTING_TELEGRAM_CHAT_ID)
+        telegram_payload["bot_token"] = (
+            decrypt_secret_with_fernet(encrypted_token, fernet) if encrypted_token else ""
+        )
+        telegram_payload["chat_id"] = (
+            decrypt_secret_with_fernet(encrypted_chat_id, fernet) if encrypted_chat_id else ""
+        )
     payload = {
-        "version": 6,
+        "version": 7,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "contains_secrets": include_secret_values,
         "groups": [],
         "proxies": [],
         "providers": [],
         "schedules": [],
+        "monitoring_tasks": [],
+        "telegram": telegram_payload,
     }
     for group in all_provider_groups(db):
         payload["groups"].append({"name": group.name, "created_at": group.created_at.isoformat()})
@@ -1795,6 +2251,21 @@ def export_json(
                 "interval_minutes": task.interval_minutes,
                 "daily_time": task.daily_time,
                 "timezone": task.timezone_name,
+            }
+        )
+    for task in monitoring_tasks:
+        payload["monitoring_tasks"].append(
+            {
+                "name": task.name,
+                "enabled": task.enabled,
+                "provider": {
+                    "name": task.provider_name_snapshot,
+                    "base_url": task.provider_base_url_snapshot,
+                },
+                "model_id": task.model_id,
+                "client_profile": task.client_profile,
+                "network_route": serialize_test_network_route(db, task.network_route),
+                "interval_minutes": task.interval_minutes,
             }
         )
 
@@ -1824,6 +2295,8 @@ async def import_json(
     proxies = payload.get("proxies", []) if isinstance(payload, dict) else None
     groups = payload.get("groups", []) if isinstance(payload, dict) else None
     schedules = payload.get("schedules", []) if isinstance(payload, dict) else None
+    monitoring_tasks = payload.get("monitoring_tasks", []) if isinstance(payload, dict) else None
+    telegram = payload.get("telegram", {}) if isinstance(payload, dict) else None
     if not isinstance(providers, list):
         flash(request, "导入失败：JSON 必须包含 providers 数组。", "error")
         return redirect("/import-export")
@@ -1836,6 +2309,12 @@ async def import_json(
     if not isinstance(schedules, list):
         flash(request, "导入失败：schedules 必须是数组。", "error")
         return redirect("/import-export")
+    if not isinstance(monitoring_tasks, list):
+        flash(request, "导入失败：monitoring_tasks 必须是数组。", "error")
+        return redirect("/import-export")
+    if not isinstance(telegram, dict):
+        flash(request, "导入失败：telegram 必须是对象。", "error")
+        return redirect("/import-export")
 
     fernet = require_session_fernet(request)
     created = 0
@@ -1845,6 +2324,8 @@ async def import_json(
     group_created = 0
     schedule_created = 0
     schedule_updated = 0
+    monitoring_created = 0
+    monitoring_updated = 0
     errors: list[str] = []
     for index, item in enumerate(groups, start=1):
         if not isinstance(item, dict):
@@ -1909,6 +2390,34 @@ async def import_json(
         if "password" in item:
             proxy.encrypted_password = encrypt_secret_with_fernet(str(item.get("password") or ""), fernet)
         db.flush()
+
+    if telegram:
+        telegram_proxy_name = telegram.get("proxy")
+        if telegram_proxy_name not in (None, ""):
+            if not isinstance(telegram_proxy_name, str):
+                errors.append("Telegram 配置：proxy 必须是代理名称或 null。")
+            else:
+                telegram_proxy = db.scalar(select(NetworkProxy).where(NetworkProxy.name == telegram_proxy_name.strip()))
+                if telegram_proxy is None:
+                    errors.append(f"Telegram 配置：找不到代理“{telegram_proxy_name}”。")
+                else:
+                    set_setting(db, SETTING_TELEGRAM_PROXY_ID, str(telegram_proxy.id))
+        else:
+            set_setting(db, SETTING_TELEGRAM_PROXY_ID, "")
+        if "bot_token" in telegram:
+            set_setting(
+                db,
+                SETTING_TELEGRAM_BOT_TOKEN,
+                encrypt_secret_with_fernet(str(telegram.get("bot_token") or ""), fernet),
+            )
+        if "chat_id" in telegram:
+            set_setting(
+                db,
+                SETTING_TELEGRAM_CHAT_ID,
+                encrypt_secret_with_fernet(str(telegram.get("chat_id") or ""), fernet),
+            )
+        if "enabled" in telegram:
+            set_setting(db, SETTING_TELEGRAM_ENABLED, "true" if bool(telegram.get("enabled")) else "false")
 
     for index, item in enumerate(providers, start=1):
         if not isinstance(item, dict):
@@ -2094,12 +2603,62 @@ async def import_json(
         }
         apply_schedule_values(task, values, selected_providers, enabled=False)
 
+    for index, item in enumerate(monitoring_tasks, start=1):
+        if not isinstance(item, dict):
+            errors.append(f"监控任务第 {index} 条：任务必须是对象。")
+            continue
+        task_name = str(item.get("name") or "").strip()
+        provider_payload = item.get("provider", {})
+        if not isinstance(provider_payload, dict):
+            errors.append(f"监控任务第 {index} 条：provider 必须是对象。")
+            continue
+        provider_name = str(provider_payload.get("name") or "").strip()
+        provider_url = normalize_base_url(str(provider_payload.get("base_url") or ""))
+        provider = db.scalar(select(Provider).where(Provider.name == provider_name, Provider.base_url == provider_url))
+        if provider is None:
+            errors.append(f"监控任务第 {index} 条：找不到中转站“{provider_name}”。")
+            continue
+        imported_route = str(item.get("network_route") or "default").strip()
+        if imported_route in {"default", "direct"}:
+            monitoring_route = imported_route
+        elif imported_route.startswith("proxy:"):
+            proxy_name = imported_route.removeprefix("proxy:").strip()
+            monitoring_proxy = db.scalar(select(NetworkProxy).where(NetworkProxy.name == proxy_name))
+            if monitoring_proxy is None:
+                errors.append(f"监控任务第 {index} 条：找不到网络代理“{proxy_name}”。")
+                continue
+            monitoring_route = f"proxy:{monitoring_proxy.id}"
+        else:
+            errors.append(f"监控任务第 {index} 条：network_route 无效。")
+            continue
+        values, task_errors, parsed_provider = parse_monitoring_task_form(
+            db,
+            name=task_name,
+            provider_id=str(provider.id),
+            model_id=str(item.get("model_id") or ""),
+            client_profile=str(item.get("client_profile") or CLIENT_PROFILE_OPENAI_CHAT),
+            network_route=monitoring_route,
+            interval_minutes=str(item.get("interval_minutes") or "5"),
+        )
+        if task_errors or parsed_provider is None:
+            errors.append(f"监控任务第 {index} 条：{' '.join(task_errors)}")
+            continue
+        task = db.scalar(select(MonitoringTask).where(MonitoringTask.name == task_name))
+        if task is None:
+            task = MonitoringTask()
+            db.add(task)
+            monitoring_created += 1
+        else:
+            monitoring_updated += 1
+        apply_monitoring_task_values(task, values, parsed_provider, enabled=False)
+
     for group in all_provider_groups(db):
         delete_group_if_empty(db, group.id)
     db.commit()
     message = (
         f"导入完成：分组新增 {group_created} 个；代理新增 {proxy_created} 个、更新 {proxy_updated} 个；"
-        f"中转站新增 {created} 个、更新 {updated} 个；定时任务新增 {schedule_created} 个、更新 {schedule_updated} 个（均已停用）"
+        f"中转站新增 {created} 个、更新 {updated} 个；定时任务新增 {schedule_created} 个、更新 {schedule_updated} 个（均已停用）；"
+        f"监控任务新增 {monitoring_created} 个、更新 {monitoring_updated} 个（均已停用）"
     )
     if errors:
         message += f"，{len(errors)} 个错误。" + " ".join(errors[:5])

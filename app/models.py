@@ -183,6 +183,65 @@ class ScheduledRun(Base):
     )
 
 
+class MonitoringTask(Base):
+    __tablename__ = "monitoring_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    provider_id: Mapped[int | None] = mapped_column(
+        ForeignKey("providers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    provider_name_snapshot: Mapped[str] = mapped_column(String(160), nullable=False)
+    provider_base_url_snapshot: Mapped[str] = mapped_column(String(600), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(260), nullable=False)
+    client_profile: Mapped[str] = mapped_column(String(32), nullable=False, default="openai_chat")
+    network_route: Mapped[str] = mapped_column(String(180), nullable=False, default="default")
+    interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_status: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    current_success_notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    provider: Mapped[Provider | None] = relationship(foreign_keys=[provider_id])
+    checks: Mapped[list["MonitoringCheck"]] = relationship(
+        back_populates="task", order_by="desc(MonitoringCheck.checked_at)", passive_deletes=True
+    )
+
+
+class MonitoringCheck(Base):
+    __tablename__ = "monitoring_checks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("monitoring_tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    task_name_snapshot: Mapped[str] = mapped_column(String(160), nullable=False)
+    provider_id: Mapped[int | None] = mapped_column(
+        ForeignKey("providers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    provider_name_snapshot: Mapped[str] = mapped_column(String(160), nullable=False)
+    provider_base_url_snapshot: Mapped[str] = mapped_column(String(600), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(260), nullable=False)
+    client_profile: Mapped[str] = mapped_column(String(32), nullable=False, default="openai_chat")
+    network_route: Mapped[str] = mapped_column(String(160), nullable=False, default="直连")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    raw_response_excerpt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    notification_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_sent")
+    notification_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+    task: Mapped[MonitoringTask | None] = relationship(back_populates="checks", foreign_keys=[task_id])
+    provider: Mapped[Provider | None] = relationship(foreign_keys=[provider_id])
+
+
 class ConnectivityTest(Base):
     __tablename__ = "connectivity_tests"
 

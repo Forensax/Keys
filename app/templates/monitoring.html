@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+
+{% block title %}监控 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>监控</h1>
+    <p class="muted">单站持续检测，恢复可用时发送 Telegram 通知。</p>
+  </div>
+</section>
+
+{% if vault_state == "ready" %}
+  <div class="panel scheduler-vault success-panel">
+    <div><strong>后台密钥可用</strong><p class="muted small">监控任务可在应用重启后继续运行。</p></div>
+    <form method="post" action="/monitoring/lock" onsubmit="return confirm('锁定后台密钥会停用全部后台任务，确定继续吗？');">
+      <button type="submit">锁定后台密钥</button>
+    </form>
+  </div>
+{% else %}
+  <div class="panel scheduler-vault warning-panel">
+    <div>
+      <strong>{{ "SESSION_SECRET 未显式配置" if vault_state == "unconfigured" else ("后台密钥已失效" if vault_state == "locked" else "后台密钥尚未授权") }}</strong>
+      <p class="muted small">
+        {% if vault_state == "unconfigured" %}请先在 .env 中设置稳定的 SESSION_SECRET 并重启应用。{% else %}授权后监控任务才能在后台自动检测。{% endif %}
+      </p>
+    </div>
+    {% if vault_state != "unconfigured" %}
+      <form method="post" action="/monitoring/authorize" class="inline-auth-form">
+        <label>应用密码<input type="password" name="password" required autocomplete="current-password"></label>
+        <button class="primary" type="submit">授权后台任务</button>
+      </form>
+    {% endif %}
+  </div>
+{% endif %}
+
+<section class="panel schedule-create-panel">
+  <h2>Telegram 通知</h2>
+  <form method="post" action="/monitoring/telegram" class="form-grid">
+    <label>Bot Token
+      <input name="bot_token" placeholder="{{ '已保存，留空则不修改' if telegram_config.has_credentials else '1234567890:ABC...' }}" autocomplete="off">
+    </label>
+    <label>Chat ID
+      <input name="chat_id" placeholder="{{ '已保存，留空则不修改' if telegram_config.has_credentials else '-1001234567890' }}" autocomplete="off">
+    </label>
+    <label>Telegram 代理
+      <select name="proxy_id">
+        <option value="">直连</option>
+        {% for proxy in proxies %}
+          <option value="{{ proxy.id }}" {% if telegram_config.proxy_id == proxy.id %}selected{% endif %} {% if not proxy.enabled and telegram_config.proxy_id != proxy.id %}disabled{% endif %}>{{ proxy.name }} · {{ proxy.endpoint }}{% if not proxy.enabled %}（已禁用）{% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="checkbox-row"><input type="checkbox" name="enabled" {% if telegram_config.enabled %}checked{% endif %}>启用 Telegram 通知</label>
+    <div class="form-actions full-span">
+      <button class="primary" type="submit">保存通知配置</button>
+    </div>
+  </form>
+  {% if telegram_config.has_credentials %}
+    <form method="post" action="/monitoring/telegram/test" class="inline-form">
+      <button type="submit">发送测试消息</button>
+    </form>
+  {% endif %}
+</section>
+
+<section class="panel schedule-create-panel">
+  <h2>新建监控任务</h2>
+  {% if errors %}
+    <div class="flash error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>
+  {% endif %}
+  {% set selected_provider_id = form_values.get('provider_id') %}
+  {% set selected_profile = form_values.get('client_profile', 'openai_chat') %}
+  {% set selected_route = form_values.get('network_route', 'default') %}
+  <form method="post" action="/monitoring/tasks" class="form-grid schedule-form">
+    <label>任务名称<input name="name" maxlength="160" required value="{{ form_values.get('name', '') }}" placeholder="例如：监控某站可用窗口"></label>
+    <label>中转站
+      <select name="provider_id" required>
+        <option value="">请选择</option>
+        {% for provider in providers %}
+          <option value="{{ provider.id }}" {% if selected_provider_id == provider.id %}selected{% endif %}>{{ provider.name }} · {{ provider.base_url }}{% if not provider.enabled %}（已禁用）{% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>模型<input name="model_id" maxlength="260" required value="{{ form_values.get('model_id', '') }}" placeholder="例如 gpt-4.1"></label>
+    <label>客户端模式
+      <select name="client_profile" required>
+        {% for profile, label in client_profile_labels.items() %}
+          <option value="{{ profile }}" {% if selected_profile == profile %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>网络路径
+      <select name="network_route" required>
+        <option value="default" {% if selected_route == 'default' %}selected{% endif %}>使用站点默认网络</option>
+        <option value="direct" {% if selected_route == 'direct' %}selected{% endif %}>直连</option>
+        {% for proxy in proxies %}
+          {% set route_value = 'proxy:' ~ proxy.id %}
+          <option value="{{ route_value }}" {% if selected_route == route_value %}selected{% endif %} {% if not proxy.enabled and selected_route != route_value %}disabled{% endif %}>{{ proxy.name }} · {{ proxy.endpoint }}{% if not proxy.enabled %}（已禁用）{% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>检测间隔（分钟）<input type="number" name="interval_minutes" min="{{ min_interval }}" max="{{ max_interval }}" value="{{ form_values.get('interval_minutes', 5) or 5 }}"></label>
+    <label class="checkbox-row"><input type="checkbox" name="enabled" {% if form_values.get('enabled') %}checked{% endif %}>创建后立即启用</label>
+    <div class="form-actions full-span"><button class="primary" type="submit">创建监控任务</button></div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>监控任务</h2><p class="muted">共 {{ tasks|length }} 个任务</p></div></div>
+  {% if tasks %}
+    <div class="table-wrap">
+      <table class="monitoring-table">
+        <thead><tr><th>任务</th><th>中转站</th><th>模型</th><th>周期</th><th>状态</th><th>下次检测</th><th>最近通知</th><th></th></tr></thead>
+        <tbody>
+          {% for task in tasks %}
+            <tr>
+              <td><strong>{{ task.name }}</strong></td>
+              <td>{{ task.provider_name_snapshot }}</td>
+              <td class="mono">{{ task.model_id }}</td>
+              <td>每 {{ task.interval_minutes }} 分钟</td>
+              <td>
+                <span class="status {{ task.last_status or ('success' if task.enabled else 'disabled') }}">{{ "运行中" if task_is_running(task.id) else (task.last_status or ("启用" if task.enabled else "停用")) }}</span>
+                {% if task.last_error %}<span class="muted small" title="{{ task.last_error }}">{{ task.last_error }}</span>{% endif %}
+              </td>
+              <td>{{ format_local_datetime(task.next_run_at) }}</td>
+              <td>{{ format_local_datetime(task.last_notified_at) }}</td>
+              <td class="action-cell"><div class="actions schedule-actions">
+                <form method="post" action="/monitoring/tasks/{{ task.id }}/run"><button class="small primary" type="submit">立即检测</button></form>
+                <form method="post" action="/monitoring/tasks/{{ task.id }}/toggle"><button class="small" type="submit">{{ "停用" if task.enabled else "启用" }}</button></form>
+                <a class="button small" href="/monitoring/tasks/{{ task.id }}/edit">编辑</a>
+                <form method="post" action="/monitoring/tasks/{{ task.id }}/delete" onsubmit="return confirm('删除任务后历史检测仍会保留，确定删除吗？');"><button class="small danger" type="submit">删除</button></form>
+              </div></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted">还没有监控任务。</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>最近检测</h2>
+  {% if recent_checks %}
+    <div class="table-wrap"><table class="monitoring-check-table">
+      <thead><tr><th>时间</th><th>任务</th><th>中转站</th><th>模型</th><th>状态</th><th>延迟</th><th>通知</th><th>错误</th></tr></thead>
+      <tbody>{% for check in recent_checks %}<tr>
+        <td>{{ format_local_datetime(check.checked_at) }}</td>
+        <td>{{ check.task_name_snapshot }}</td>
+        <td>{{ check.provider_name_snapshot }}</td>
+        <td class="mono">{{ check.model_id }}</td>
+        <td><span class="status {{ check.status }}">{{ check.status }}</span></td>
+        <td>{{ check.latency_ms if check.latency_ms is not none else "" }}{% if check.latency_ms is not none %} ms{% endif %}</td>
+        <td><span class="status {{ check.notification_status }}">{{ check.notification_status }}</span></td>
+        <td class="narrow" title="{{ check.error_message or check.notification_error }}">{{ check.error_message or check.notification_error or "—" }}</td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+  {% else %}
+    <p class="muted">还没有检测记录。</p>
+  {% endif %}
+</section>
+{% endblock %}

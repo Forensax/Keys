@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-本仓库是个人使用的 FastAPI + Jinja2 + Vanilla JS + SQLite 中转站管理工具。核心后端在 `app/`：`main.py` 定义路由，`models.py`、`db.py` 管理数据模型与连接，`security.py` 处理登录和加密，`scheduler.py`、`analytics.py`、`proxy_support.py`、`openai_compat.py` 分别负责定时任务、统计、代理和 OpenAI 兼容测试。模板在 `app/templates/`，前端脚本和样式在 `app/static/`，测试在 `tests/`，部署脚本在 `scripts/`。`data/` 保存本地运行数据库，不作为普通代码改动处理。
+本仓库是个人使用的 FastAPI + Jinja2 + Vanilla JS + SQLite 中转站管理工具。核心后端在 `app/`：`main.py` 定义路由，`models.py`、`db.py` 管理数据模型与连接，`security.py` 处理登录和加密，`scheduler.py`、`analytics.py`、`proxy_support.py`、`openai_compat.py`、`notifications.py` 分别负责后台任务、统计、代理、OpenAI 兼容测试和 Telegram 通知。模板在 `app/templates/`，前端脚本和样式在 `app/static/`，测试在 `tests/`，部署脚本在 `scripts/`。`data/` 保存本地运行数据库，不作为普通代码改动处理。
 
 ## 与用户协作方式
 

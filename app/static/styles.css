@@ -749,6 +749,16 @@ tr:last-child td {
   color: #3730a3;
 }
 
+.status.sent {
+  background: #e8f6ef;
+  color: var(--success);
+}
+
+.status.not_sent {
+  background: #eceff4;
+  color: #60697a;
+}
+
 .preference-save-status {
   margin: -2px 0 0;
   min-height: 18px;
@@ -925,6 +935,7 @@ tr:last-child td {
 
 .scheduler-vault,
 .inline-auth-form,
+.inline-form,
 .statistics-filters {
   align-items: end;
   display: flex;
@@ -960,7 +971,9 @@ tr:last-child td {
 }
 
 .schedule-table,
-.schedule-run-table {
+.schedule-run-table,
+.monitoring-table,
+.monitoring-check-table {
   min-width: 1040px;
 }
 

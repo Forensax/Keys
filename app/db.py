@@ -142,6 +142,86 @@ def ensure_scheduling_columns(bind: Engine = engine) -> None:
             connection.execute(text(statement))
 
 
+def ensure_monitoring_columns(bind: Engine = engine) -> None:
+    inspector = inspect(bind)
+    tables = set(inspector.get_table_names())
+    task_migrations = {
+        "name": "ALTER TABLE monitoring_tasks ADD COLUMN name VARCHAR(160) NOT NULL DEFAULT ''",
+        "enabled": "ALTER TABLE monitoring_tasks ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT 0",
+        "provider_id": "ALTER TABLE monitoring_tasks ADD COLUMN provider_id INTEGER",
+        "provider_name_snapshot": (
+            "ALTER TABLE monitoring_tasks ADD COLUMN provider_name_snapshot VARCHAR(160) NOT NULL DEFAULT ''"
+        ),
+        "provider_base_url_snapshot": (
+            "ALTER TABLE monitoring_tasks ADD COLUMN provider_base_url_snapshot VARCHAR(600) NOT NULL DEFAULT ''"
+        ),
+        "model_id": "ALTER TABLE monitoring_tasks ADD COLUMN model_id VARCHAR(260) NOT NULL DEFAULT ''",
+        "client_profile": (
+            "ALTER TABLE monitoring_tasks ADD COLUMN client_profile VARCHAR(32) NOT NULL DEFAULT 'openai_chat'"
+        ),
+        "network_route": (
+            "ALTER TABLE monitoring_tasks ADD COLUMN network_route VARCHAR(180) NOT NULL DEFAULT 'default'"
+        ),
+        "interval_minutes": "ALTER TABLE monitoring_tasks ADD COLUMN interval_minutes INTEGER NOT NULL DEFAULT 5",
+        "next_run_at": "ALTER TABLE monitoring_tasks ADD COLUMN next_run_at DATETIME",
+        "last_status": "ALTER TABLE monitoring_tasks ADD COLUMN last_status VARCHAR(32) NOT NULL DEFAULT ''",
+        "last_error": "ALTER TABLE monitoring_tasks ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+        "last_latency_ms": "ALTER TABLE monitoring_tasks ADD COLUMN last_latency_ms INTEGER",
+        "last_checked_at": "ALTER TABLE monitoring_tasks ADD COLUMN last_checked_at DATETIME",
+        "last_notified_at": "ALTER TABLE monitoring_tasks ADD COLUMN last_notified_at DATETIME",
+        "current_success_notified": (
+            "ALTER TABLE monitoring_tasks ADD COLUMN current_success_notified BOOLEAN NOT NULL DEFAULT 0"
+        ),
+        "created_at": "ALTER TABLE monitoring_tasks ADD COLUMN created_at DATETIME",
+        "updated_at": "ALTER TABLE monitoring_tasks ADD COLUMN updated_at DATETIME",
+    }
+    check_migrations = {
+        "task_id": "ALTER TABLE monitoring_checks ADD COLUMN task_id INTEGER",
+        "task_name_snapshot": (
+            "ALTER TABLE monitoring_checks ADD COLUMN task_name_snapshot VARCHAR(160) NOT NULL DEFAULT ''"
+        ),
+        "provider_id": "ALTER TABLE monitoring_checks ADD COLUMN provider_id INTEGER",
+        "provider_name_snapshot": (
+            "ALTER TABLE monitoring_checks ADD COLUMN provider_name_snapshot VARCHAR(160) NOT NULL DEFAULT ''"
+        ),
+        "provider_base_url_snapshot": (
+            "ALTER TABLE monitoring_checks ADD COLUMN provider_base_url_snapshot VARCHAR(600) NOT NULL DEFAULT ''"
+        ),
+        "model_id": "ALTER TABLE monitoring_checks ADD COLUMN model_id VARCHAR(260) NOT NULL DEFAULT ''",
+        "client_profile": (
+            "ALTER TABLE monitoring_checks ADD COLUMN client_profile VARCHAR(32) NOT NULL DEFAULT 'openai_chat'"
+        ),
+        "network_route": (
+            "ALTER TABLE monitoring_checks ADD COLUMN network_route VARCHAR(160) NOT NULL DEFAULT '直连'"
+        ),
+        "status": "ALTER TABLE monitoring_checks ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'failed'",
+        "latency_ms": "ALTER TABLE monitoring_checks ADD COLUMN latency_ms INTEGER",
+        "error_message": "ALTER TABLE monitoring_checks ADD COLUMN error_message TEXT NOT NULL DEFAULT ''",
+        "raw_response_excerpt": (
+            "ALTER TABLE monitoring_checks ADD COLUMN raw_response_excerpt TEXT NOT NULL DEFAULT ''"
+        ),
+        "notification_status": (
+            "ALTER TABLE monitoring_checks ADD COLUMN notification_status VARCHAR(32) NOT NULL DEFAULT 'not_sent'"
+        ),
+        "notification_error": (
+            "ALTER TABLE monitoring_checks ADD COLUMN notification_error TEXT NOT NULL DEFAULT ''"
+        ),
+        "checked_at": "ALTER TABLE monitoring_checks ADD COLUMN checked_at DATETIME",
+    }
+    for table_name, migrations in (
+        ("monitoring_tasks", task_migrations),
+        ("monitoring_checks", check_migrations),
+    ):
+        if table_name not in tables:
+            continue
+        columns = {column["name"] for column in inspect(bind).get_columns(table_name)}
+        for column_name, statement in migrations.items():
+            if column_name in columns:
+                continue
+            with bind.begin() as connection:
+                connection.execute(text(statement))
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
 
@@ -153,6 +233,7 @@ def init_db() -> None:
     ensure_model_source_column()
     ensure_provider_group_column()
     ensure_scheduling_columns()
+    ensure_monitoring_columns()
 
 
 def get_db() -> Generator[Session, None, None]:

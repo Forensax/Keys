@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}编辑监控任务 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>编辑监控任务</h1>
+    <p class="muted">{{ task.name }}</p>
+  </div>
+  <a class="button" href="/monitoring">返回监控</a>
+</section>
+
+<section class="panel">
+  {% if errors %}<div class="flash error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% endif %}
+  {% set values = form_values if form_values is defined else {} %}
+  {% set selected_provider_id = values.get('provider_id', task.provider_id) %}
+  {% set selected_profile = values.get('client_profile', task.client_profile) %}
+  {% set selected_route = values.get('network_route', task.network_route) %}
+  <form method="post" action="/monitoring/tasks/{{ task.id }}" class="form-grid schedule-form">
+    <label>任务名称<input name="name" maxlength="160" required value="{{ values.get('name', task.name) }}"></label>
+    <label>中转站
+      <select name="provider_id" required>
+        {% for provider in providers %}
+          <option value="{{ provider.id }}" {% if selected_provider_id == provider.id %}selected{% endif %}>{{ provider.name }} · {{ provider.base_url }}{% if not provider.enabled %}（已禁用）{% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>模型<input name="model_id" maxlength="260" required value="{{ values.get('model_id', task.model_id) }}"></label>
+    <label>客户端模式
+      <select name="client_profile" required>
+        {% for profile, label in client_profile_labels.items() %}
+          <option value="{{ profile }}" {% if selected_profile == profile %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>网络路径
+      <select name="network_route" required>
+        <option value="default" {% if selected_route == 'default' %}selected{% endif %}>使用站点默认网络</option>
+        <option value="direct" {% if selected_route == 'direct' %}selected{% endif %}>直连</option>
+        {% for proxy in proxies %}
+          {% set route_value = 'proxy:' ~ proxy.id %}
+          <option value="{{ route_value }}" {% if selected_route == route_value %}selected{% endif %} {% if not proxy.enabled and selected_route != route_value %}disabled{% endif %}>{{ proxy.name }} · {{ proxy.endpoint }}{% if not proxy.enabled %}（已禁用）{% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>检测间隔（分钟）<input type="number" name="interval_minutes" min="{{ min_interval }}" max="{{ max_interval }}" value="{{ values.get('interval_minutes', task.interval_minutes) }}"></label>
+    <label class="checkbox-row"><input type="checkbox" name="enabled" {% if values.get('enabled', task.enabled) %}checked{% endif %}>启用任务</label>
+    <div class="form-actions full-span"><a class="button" href="/monitoring">取消</a><button class="primary" type="submit">保存任务</button></div>
+  </form>
+</section>
+{% endblock %}
