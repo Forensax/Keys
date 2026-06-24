@@ -1038,6 +1038,81 @@ tr:last-child td {
   display: block;
 }
 
+.monitoring-timeline-row td {
+  background: #fbfcfe;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.monitoring-timeline {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 86px minmax(0, 1fr) max-content;
+  min-width: 0;
+}
+
+.monitoring-timeline-label,
+.monitoring-timeline-summary {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.monitoring-timeline-track {
+  background: #e5e7eb;
+  border-radius: 999px;
+  height: 24px;
+  min-width: 0;
+  position: relative;
+}
+
+.monitoring-timeline-segment {
+  border-radius: 999px;
+  height: 8px;
+  position: absolute;
+  top: 8px;
+}
+
+.monitoring-timeline-segment.is-success {
+  background: #22c55e;
+}
+
+.monitoring-timeline-segment.is-failed {
+  background: #ef4444;
+}
+
+.monitoring-timeline-segment.is-skipped {
+  background: #94a3b8;
+}
+
+.monitoring-timeline-segment.is-nodata {
+  background: #d1d5db;
+}
+
+.monitoring-timeline-marker {
+  background: #ffffff;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  position: absolute;
+  top: -5px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.monitoring-timeline-marker.is-success {
+  color: #15803d;
+}
+
+.monitoring-timeline-marker.is-failed {
+  color: #b91c1c;
+}
+
 .monitoring-table .task-name,
 .monitoring-table .task-provider {
   display: block;
@@ -1048,6 +1123,18 @@ tr:last-child td {
 
 .schedule-actions {
   height: auto;
+}
+
+@media (max-width: 760px) {
+  .monitoring-timeline {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .monitoring-timeline-label,
+  .monitoring-timeline-summary {
+    white-space: normal;
+  }
 }
 
 .status.partial,

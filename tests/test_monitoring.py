@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -202,6 +202,9 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert "gpt-watch" in task_table
     assert "monitoring-period-cell" in task_table
     assert "每 5 分钟 · 最多 1 次" in task_table
+    assert "monitoring-timeline-row" in task_table
+    assert "过去 24 小时" in task_table
+    assert "暂无可用率 · 故障 0 次" in task_table
     assert "恢复" in task_table
     assert "立即检测" in task_table
     assert "停用" in task_table
@@ -213,6 +216,8 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert ".monitoring-table {\n  min-width: 0;" in styles
     assert ".monitoring-table .schedule-actions {\n  flex-wrap: nowrap;" in styles
     assert ".monitoring-period-cell span {\n  display: block;" in styles
+    assert ".monitoring-timeline-track" in styles
+    assert ".monitoring-timeline-segment.is-success" in styles
     assert ".monitoring-check-table" in styles and "min-width: 1040px" in styles
 
     edit_page = client.get(f"/monitoring/tasks/{task_id}/edit")
@@ -222,6 +227,104 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert 'name="notify_on_recovery"' in edit_page.text
     assert 'name="notify_on_failure"' in edit_page.text
 
+    client.close()
+
+
+def test_monitoring_page_renders_24_hour_status_timeline() -> None:
+    client = setup_client()
+    provider_id = create_provider(client)
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        assert provider is not None
+        task = MonitoringTask(
+            name="timeline relay",
+            enabled=True,
+            provider_id=provider.id,
+            provider_name_snapshot=provider.name,
+            provider_base_url_snapshot=provider.base_url,
+            model_id="gpt-watch",
+            client_profile=CLIENT_PROFILE_CODEX,
+            network_route="direct",
+            interval_minutes=5,
+            next_run_at=now + timedelta(minutes=5),
+        )
+        db.add(task)
+        db.flush()
+        checks = [
+            MonitoringCheck(
+                task_id=task.id,
+                task_name_snapshot=task.name,
+                provider_id=provider.id,
+                provider_name_snapshot=provider.name,
+                provider_base_url_snapshot=provider.base_url,
+                model_id=task.model_id,
+                client_profile=task.client_profile,
+                network_route=task.network_route,
+                status="success",
+                latency_ms=120,
+                checked_at=now - timedelta(hours=6),
+            ),
+            MonitoringCheck(
+                task_id=task.id,
+                task_name_snapshot=task.name,
+                provider_id=provider.id,
+                provider_name_snapshot=provider.name,
+                provider_base_url_snapshot=provider.base_url,
+                model_id=task.model_id,
+                client_profile=task.client_profile,
+                network_route=task.network_route,
+                status="failed",
+                error_message="upstream unavailable",
+                checked_at=now - timedelta(hours=4),
+            ),
+            MonitoringCheck(
+                task_id=task.id,
+                task_name_snapshot=task.name,
+                provider_id=provider.id,
+                provider_name_snapshot=provider.name,
+                provider_base_url_snapshot=provider.base_url,
+                model_id=task.model_id,
+                client_profile=task.client_profile,
+                network_route=task.network_route,
+                status="skipped",
+                error_message="中转站已归档。",
+                checked_at=now - timedelta(hours=3),
+            ),
+            MonitoringCheck(
+                task_id=task.id,
+                task_name_snapshot=task.name,
+                provider_id=provider.id,
+                provider_name_snapshot=provider.name,
+                provider_base_url_snapshot=provider.base_url,
+                model_id=task.model_id,
+                client_profile=task.client_profile,
+                network_route=task.network_route,
+                status="success",
+                latency_ms=98,
+                checked_at=now - timedelta(hours=2),
+            ),
+        ]
+        db.add_all(checks)
+        db.commit()
+
+    page = client.get("/monitoring")
+    assert page.status_code == 200
+    table_start = page.text.index('<table class="monitoring-table">')
+    table_end = page.text.index("</table>", table_start)
+    task_table = page.text[table_start:table_end]
+    assert "monitoring-timeline-row" in task_table
+    assert "monitoring-timeline-track" in task_table
+    assert "monitoring-timeline-segment is-success" in task_table
+    assert "monitoring-timeline-segment is-failed" in task_table
+    assert "monitoring-timeline-segment is-skipped" in task_table
+    assert "monitoring-timeline-marker is-failed" in task_table
+    assert "monitoring-timeline-marker is-success" in task_table
+    assert "不可用" in task_table
+    assert "恢复" in task_table
+    assert "可用率 66.7% · 故障 1 次" in task_table
+    assert "upstream unavailable" in task_table
+    assert ".monitoring-check-table" in Path("app/static/styles.css").read_text(encoding="utf-8")
     client.close()
 
 

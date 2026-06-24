@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
@@ -111,6 +111,7 @@ from .test_runner import (
 
 SETTING_STATISTICS_FILTER_PREFERENCES = "statistics_filter_preferences"
 DEFAULT_STATISTICS_FILTERS = {"range": "7d", "provider_id": "all", "source": "all"}
+MONITORING_TIMELINE_HOURS = 24
 
 
 @asynccontextmanager
@@ -1713,6 +1714,133 @@ def monitoring_task_or_404(db: Session, task_id: int) -> MonitoringTask:
     return task
 
 
+def _datetime_as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _monitoring_timeline_status_label(status: str) -> str:
+    return {
+        "success": "可用",
+        "failed": "不可用",
+        "skipped": "跳过",
+        "nodata": "无数据",
+    }.get(status, status or "无数据")
+
+
+def _monitoring_check_title(check: MonitoringCheck, label: str) -> str:
+    parts = [f"{format_local_datetime(check.checked_at)} · {label}"]
+    if check.latency_ms is not None:
+        parts.append(f"延迟 {check.latency_ms} ms")
+    if check.error_message:
+        parts.append(check.error_message)
+    return " · ".join(parts)
+
+
+def build_monitoring_timelines(
+    db: Session, tasks: list[MonitoringTask], *, now: datetime | None = None
+) -> dict[int, dict[str, Any]]:
+    window_end = _datetime_as_utc(now or utc_now())
+    window_start = window_end - timedelta(hours=MONITORING_TIMELINE_HOURS)
+    total_seconds = max((window_end - window_start).total_seconds(), 1)
+    timelines: dict[int, dict[str, Any]] = {}
+    task_ids = [task.id for task in tasks]
+    checks_by_task: dict[int, list[MonitoringCheck]] = {task_id: [] for task_id in task_ids}
+    prior_checks: dict[int, MonitoringCheck] = {}
+
+    if task_ids:
+        recent_checks = db.scalars(
+            select(MonitoringCheck)
+            .where(
+                MonitoringCheck.task_id.in_(task_ids),
+                MonitoringCheck.checked_at >= window_start,
+                MonitoringCheck.checked_at <= window_end,
+            )
+            .order_by(MonitoringCheck.task_id, MonitoringCheck.checked_at, MonitoringCheck.id)
+        ).all()
+        for check in recent_checks:
+            if check.task_id is not None:
+                checks_by_task.setdefault(check.task_id, []).append(check)
+
+        for task_id in task_ids:
+            prior = db.scalar(
+                select(MonitoringCheck)
+                .where(MonitoringCheck.task_id == task_id, MonitoringCheck.checked_at < window_start)
+                .order_by(MonitoringCheck.checked_at.desc(), MonitoringCheck.id.desc())
+                .limit(1)
+            )
+            if prior is not None:
+                prior_checks[task_id] = prior
+
+    for task in tasks:
+        task_checks = checks_by_task.get(task.id, [])
+        current_status = prior_checks.get(task.id).status if task.id in prior_checks else "nodata"
+        current_started_at = window_start
+        previous_event_status = current_status if current_status in {"success", "failed"} else ""
+        segments: list[dict[str, Any]] = []
+        markers: list[dict[str, Any]] = []
+
+        def append_segment(start_at: datetime, end_at: datetime, status: str) -> None:
+            start_at = max(_datetime_as_utc(start_at), window_start)
+            end_at = min(_datetime_as_utc(end_at), window_end)
+            if end_at <= start_at:
+                return
+            left = ((start_at - window_start).total_seconds() / total_seconds) * 100
+            width = ((end_at - start_at).total_seconds() / total_seconds) * 100
+            segments.append(
+                {
+                    "left_percent": round(left, 4),
+                    "width_percent": round(width, 4),
+                    "status": status or "nodata",
+                    "label": _monitoring_timeline_status_label(status),
+                    "title": f"{format_local_datetime(start_at)} - {format_local_datetime(end_at)} · {_monitoring_timeline_status_label(status)}",
+                }
+            )
+
+        for check in task_checks:
+            checked_at = _datetime_as_utc(check.checked_at)
+            append_segment(current_started_at, checked_at, current_status)
+            status = check.status or "nodata"
+            if status in {"success", "failed"} and status != previous_event_status:
+                label = "恢复" if status == "success" else "不可用"
+                markers.append(
+                    {
+                        "left_percent": round(((checked_at - window_start).total_seconds() / total_seconds) * 100, 4),
+                        "status": status,
+                        "label": label,
+                        "title": _monitoring_check_title(check, label),
+                    }
+                )
+                previous_event_status = status
+            current_status = status
+            current_started_at = checked_at
+
+        append_segment(current_started_at, window_end, current_status)
+        success_count = sum(1 for check in task_checks if check.status == "success")
+        failed_count = sum(1 for check in task_checks if check.status == "failed")
+        counted_checks = success_count + failed_count
+        if counted_checks:
+            availability_summary = f"可用率 {(success_count / counted_checks) * 100:.1f}% · 故障 {failed_count} 次"
+        else:
+            availability_summary = "暂无可用率 · 故障 0 次"
+        timelines[task.id] = {
+            "segments": segments or [
+                {
+                    "left_percent": 0,
+                    "width_percent": 100,
+                    "status": "nodata",
+                    "label": "无数据",
+                    "title": f"{format_local_datetime(window_start)} - {format_local_datetime(window_end)} · 无数据",
+                }
+            ],
+            "markers": markers,
+            "summary": availability_summary,
+        }
+
+    return timelines
+
+
 def monitoring_page_context(
     db: Session,
     *,
@@ -1734,6 +1862,7 @@ def monitoring_page_context(
     )
     return {
         "tasks": tasks,
+        "monitoring_timelines": build_monitoring_timelines(db, tasks),
         "recent_checks": recent_checks,
         "providers": providers,
         "proxies": all_proxies(db),

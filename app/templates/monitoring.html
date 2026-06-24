@@ -123,6 +123,7 @@
         <thead><tr><th>任务</th><th>模型</th><th>周期</th><th>状态</th><th>下次检测</th><th></th></tr></thead>
         <tbody>
           {% for task in tasks %}
+            {% set timeline = monitoring_timelines.get(task.id) %}
             <tr>
               <td>
                 <strong class="task-name">{{ task.name }}</strong>
@@ -144,6 +145,22 @@
                 <a class="button small" href="/monitoring/tasks/{{ task.id }}/edit">编辑</a>
                 <form method="post" action="/monitoring/tasks/{{ task.id }}/delete" onsubmit="return confirm('删除任务后历史检测仍会保留，确定删除吗？');"><button class="small danger" type="submit">删除</button></form>
               </div></td>
+            </tr>
+            <tr class="monitoring-timeline-row">
+              <td colspan="6">
+                <div class="monitoring-timeline">
+                  <span class="monitoring-timeline-label">过去 24 小时</span>
+                  <div class="monitoring-timeline-track" aria-label="{{ task.name }} 过去 24 小时可用状态">
+                    {% for segment in timeline.segments %}
+                      <span class="monitoring-timeline-segment is-{{ segment.status }}" style="left: {{ segment.left_percent }}%; width: {{ segment.width_percent }}%;" title="{{ segment.title }}"></span>
+                    {% endfor %}
+                    {% for marker in timeline.markers %}
+                      <span class="monitoring-timeline-marker is-{{ marker.status }}" style="left: {{ marker.left_percent }}%;" title="{{ marker.title }}">{{ marker.label }}</span>
+                    {% endfor %}
+                  </div>
+                  <span class="monitoring-timeline-summary">{{ timeline.summary }}</span>
+                </div>
+              </td>
             </tr>
           {% endfor %}
         </tbody>
