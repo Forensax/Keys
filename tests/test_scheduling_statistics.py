@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, inspect, select, text
 
 from app.analytics import StatRecord, build_statistics, percentile_95
 from app.config import settings
-from app.db import Base, SessionLocal, engine, ensure_scheduling_columns
+from app.db import SessionLocal, ensure_scheduling_columns
 from app.main import app
 from app.models import ConnectivityTest, Provider, ScheduledRun, ScheduledTask
 from app import scheduler as scheduler_module
@@ -29,14 +29,9 @@ from app.security import (
     SETTING_SCHEDULER_WRAPPED_VAULT_KEY,
 )
 
-
-def reset_db() -> None:
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-
-
 def setup_client() -> TestClient:
     client = TestClient(app)
+    client.__enter__()
     response = client.post(
         "/setup",
         data={"password": "long-test-password", "confirm_password": "long-test-password"},
@@ -72,7 +67,6 @@ def test_scheduling_migration_is_repeatable_and_marks_existing_rows_manual(tmp_p
 
 
 def test_scheduler_vault_round_trip_never_stores_plain_vault_key() -> None:
-    reset_db()
     client = setup_client()
     with SessionLocal() as db:
         authorize_scheduler_vault(db, "long-test-password", settings.session_secret)
@@ -114,7 +108,6 @@ def test_schedule_validation_and_next_run_cover_interval_and_daily() -> None:
 
 
 def test_scheduled_run_freezes_targets_and_writes_summary(monkeypatch) -> None:
-    reset_db()
     with SessionLocal() as db:
         provider = Provider(
             name="P",
@@ -198,7 +191,6 @@ def test_statistics_provider_ranking_uses_success_rate_then_volume_then_name() -
 
 
 def test_schedule_and_statistics_pages_use_real_history_only() -> None:
-    reset_db()
     client = setup_client()
     schedules = client.get("/schedules")
     assert schedules.status_code == 200
@@ -236,7 +228,6 @@ def test_schedule_and_statistics_pages_use_real_history_only() -> None:
 
 
 def test_statistics_page_describes_provider_ranking_by_success_rate() -> None:
-    reset_db()
     client = setup_client()
     with SessionLocal() as db:
         provider = Provider(
@@ -267,7 +258,6 @@ def test_statistics_page_describes_provider_ranking_by_success_rate() -> None:
 
 
 def test_statistics_filter_preferences_save_restore_and_repair() -> None:
-    reset_db()
     client = setup_client()
     with SessionLocal() as db:
         provider = Provider(
@@ -337,8 +327,7 @@ def test_statistics_filter_preferences_save_restore_and_repair() -> None:
     client.close()
 
 
-def test_backup_v7_round_trips_schedule_definitions_as_disabled() -> None:
-    reset_db()
+def test_backup_v7_round_trips_schedule_definitions_as_disabled(shared_db_reset) -> None:
     client = setup_client()
     response = client.post(
         "/schedules",
@@ -357,7 +346,7 @@ def test_backup_v7_round_trips_schedule_definitions_as_disabled() -> None:
     assert "scheduler_wrapped_vault_key" not in json.dumps(exported)
     client.close()
 
-    reset_db()
+    shared_db_reset()
     restored_client = setup_client()
     imported = restored_client.post(
         "/import",
@@ -375,7 +364,6 @@ def test_backup_v7_round_trips_schedule_definitions_as_disabled() -> None:
 
 
 def test_cleanup_only_removes_old_scheduled_history() -> None:
-    reset_db()
     now = datetime.now(timezone.utc)
     with SessionLocal() as db:
         run = ScheduledRun(task_name_snapshot="old", started_at=now - timedelta(days=181), status="success")

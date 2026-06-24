@@ -10,9 +10,7 @@ from sqlalchemy import create_engine, inspect, select, text  # noqa: E402
 
 from app import main as main_module  # noqa: E402
 from app.db import (  # noqa: E402
-    Base,
     SessionLocal,
-    engine,
     ensure_client_profile_columns,
     ensure_model_source_column,
     ensure_provider_group_column,
@@ -33,12 +31,6 @@ from app.proxy_support import ProxyTestResult  # noqa: E402
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def reset_db() -> None:
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-
 
 def setup_and_create_provider(client: TestClient, name: str = "Relay") -> int:
     client.post(
@@ -80,7 +72,6 @@ def create_proxy(client: TestClient, name: str = "Local Proxy", enabled: bool = 
 
 
 def test_setup_login_and_provider_crud() -> None:
-    reset_db()
     client = TestClient(app)
 
     setup_page = client.get("/setup")
@@ -142,7 +133,6 @@ def test_setup_login_and_provider_crud() -> None:
 
 
 def test_export_without_secrets_omits_api_key() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     client.post(
@@ -166,7 +156,6 @@ def test_export_without_secrets_omits_api_key() -> None:
 
 
 def test_provider_api_key_endpoint_returns_secret_for_logged_in_session() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     create = client.post(
@@ -189,7 +178,6 @@ def test_provider_api_key_endpoint_returns_secret_for_logged_in_session() -> Non
 
 
 def test_provider_api_key_endpoint_requires_login() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     create = client.post(
@@ -212,7 +200,6 @@ def test_provider_api_key_endpoint_requires_login() -> None:
 
 
 def test_index_uses_latest_valid_model_then_falls_back_to_first() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
 
@@ -262,7 +249,6 @@ def test_index_uses_latest_valid_model_then_falls_back_to_first() -> None:
 
 
 def test_provider_groups_render_in_creation_order_and_reuse_names_case_insensitively() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
 
@@ -336,7 +322,6 @@ def test_provider_groups_render_in_creation_order_and_reuse_names_case_insensiti
 
 
 def test_group_validation_rolls_back_new_groups_and_archives_keep_group() -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
 
@@ -496,7 +481,6 @@ def test_provider_group_column_is_added_to_existing_provider_table(tmp_path) -> 
 
 
 def test_detail_allows_manual_model_and_temporary_profile(monkeypatch) -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     calls: list[tuple[str, str, str | None]] = []
@@ -536,7 +520,6 @@ def test_detail_allows_manual_model_and_temporary_profile(monkeypatch) -> None:
 
 
 def test_detail_model_rows_fill_test_model_and_archive_stays_read_only() -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     with SessionLocal() as db:
@@ -585,7 +568,6 @@ def test_model_fill_click_can_infer_client_profile_from_model_name() -> None:
 
 
 def test_manual_models_are_added_sorted_and_only_manual_models_can_be_deleted() -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     with SessionLocal() as db:
@@ -659,7 +641,6 @@ def test_manual_models_are_added_sorted_and_only_manual_models_can_be_deleted() 
 
 
 def test_only_manual_model_appears_on_home_and_deleting_it_clears_test_model() -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     client.post(f"/providers/{provider_id}/models/manual", data={"model_id": "manual-only"})
@@ -683,7 +664,6 @@ def test_only_manual_model_appears_on_home_and_deleting_it_clears_test_model() -
 
 
 def test_refresh_models_synchronizes_remote_models_and_preserves_manual_models(monkeypatch) -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     with SessionLocal() as db:
@@ -755,7 +735,6 @@ def test_refresh_models_synchronizes_remote_models_and_preserves_manual_models(m
 
 
 def test_detail_response_column_uses_success_response_and_failure_error() -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     with SessionLocal() as db:
@@ -797,7 +776,6 @@ def test_detail_response_column_uses_success_response_and_failure_error() -> Non
 
 
 def test_invalid_client_profile_is_rejected() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
 
@@ -816,7 +794,6 @@ def test_invalid_client_profile_is_rejected() -> None:
 
 
 def test_archive_and_restore_provider_flow() -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
 
@@ -842,7 +819,6 @@ def test_archive_and_restore_provider_flow() -> None:
 
 
 def test_visible_provider_times_are_rendered_in_app_timezone() -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     with SessionLocal() as db:
@@ -875,7 +851,6 @@ def test_visible_provider_times_are_rendered_in_app_timezone() -> None:
 
 
 def test_archived_provider_rejects_mutations_but_allows_copy_and_delete() -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     with SessionLocal() as db:
@@ -929,8 +904,7 @@ def test_archived_provider_rejects_mutations_but_allows_copy_and_delete() -> Non
         assert db.get(Provider, provider_id) is None
 
 
-def test_export_and_import_preserve_archive_state_and_support_old_json() -> None:
-    reset_db()
+def test_export_and_import_preserve_archive_state_and_support_old_json(shared_db_reset) -> None:
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     client.post(f"/providers/{provider_id}/archive")
@@ -938,8 +912,9 @@ def test_export_and_import_preserve_archive_state_and_support_old_json() -> None
     exported = client.post("/export", data={"password": ""})
     assert exported.status_code == 200
     assert exported.json()["providers"][0]["archived_at"] is not None
+    client.close()
 
-    reset_db()
+    shared_db_reset()
     import_client = TestClient(app)
     import_client.post(
         "/setup",
@@ -989,8 +964,7 @@ def test_export_and_import_preserve_archive_state_and_support_old_json() -> None
         assert legacy_provider.group_id is None
 
 
-def test_group_export_and_import_preserve_references_and_creation_order() -> None:
-    reset_db()
+def test_group_export_and_import_preserve_references_and_creation_order(shared_db_reset) -> None:
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     for name, group_name in (("Zulu Relay", "Zulu"), ("Alpha Relay", "Alpha")):
@@ -1016,8 +990,9 @@ def test_group_export_and_import_preserve_references_and_creation_order() -> Non
         "Alpha Relay": "Alpha",
         "Zulu Relay": "Zulu",
     }
+    client.close()
 
-    reset_db()
+    shared_db_reset()
     import_client = TestClient(app)
     import_client.post(
         "/setup",
@@ -1040,7 +1015,6 @@ def test_group_export_and_import_preserve_references_and_creation_order() -> Non
 
 
 def test_home_provider_names_copy_without_changing_open_links() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     for name, group_name in (("Ungrouped Relay", ""), ("Grouped Relay", "Production")):
@@ -1069,7 +1043,6 @@ def test_home_provider_names_copy_without_changing_open_links() -> None:
 
 
 def test_home_current_model_can_be_copied_without_opening_picker() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     client.post(
@@ -1099,7 +1072,6 @@ def test_home_current_model_can_be_copied_without_opening_picker() -> None:
 
 
 def test_import_rejects_invalid_client_profile_without_stopping_other_rows() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     payload = {
@@ -1133,7 +1105,6 @@ def test_import_rejects_invalid_client_profile_without_stopping_other_rows() -> 
 
 
 def test_proxy_credentials_are_encrypted_and_proxy_page_masks_them() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     proxy_id = create_proxy(client)
@@ -1155,7 +1126,6 @@ def test_proxy_credentials_are_encrypted_and_proxy_page_masks_them() -> None:
 
 
 def test_provider_default_and_temporary_proxy_routes(monkeypatch) -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     proxy_id = create_proxy(client)
@@ -1200,7 +1170,6 @@ def test_provider_default_and_temporary_proxy_routes(monkeypatch) -> None:
 
 
 def test_disabled_default_proxy_rejects_requests_without_direct_fallback(monkeypatch) -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     proxy_id = create_proxy(client)
@@ -1244,7 +1213,6 @@ def test_disabled_default_proxy_rejects_requests_without_direct_fallback(monkeyp
 
 
 def test_referenced_proxy_cannot_be_deleted() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     proxy_id = create_proxy(client)
@@ -1267,7 +1235,6 @@ def test_referenced_proxy_cannot_be_deleted() -> None:
 
 
 def test_proxy_self_test_persists_latest_result(monkeypatch) -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     proxy_id = create_proxy(client)
@@ -1289,8 +1256,7 @@ def test_proxy_self_test_persists_latest_result(monkeypatch) -> None:
         assert proxy.last_tested_at is not None
 
 
-def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
-    reset_db()
+def test_proxy_export_and_secret_import_preserve_default_reference(shared_db_reset) -> None:
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     proxy_id = create_proxy(client)
@@ -1344,8 +1310,9 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
     assert secret_export["proxies"][0]["username"] == "user@name"
     assert secret_export["proxies"][0]["password"] == "p:a/ss"
     assert secret_export["providers"][0]["api_key"] == "sk-test-secret"
+    client.close()
 
-    reset_db()
+    shared_db_reset()
     import_client = TestClient(app)
     import_client.post(
         "/setup",
@@ -1378,7 +1345,6 @@ def test_proxy_export_and_secret_import_preserve_default_reference() -> None:
 
 
 def test_test_preferences_endpoint_saves_partial_updates_and_detail_selection() -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
 
@@ -1414,7 +1380,6 @@ def test_test_preferences_endpoint_saves_partial_updates_and_detail_selection() 
 
 
 def test_saved_test_uses_persisted_preferences_and_returns_json(monkeypatch) -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     client.post(
@@ -1444,7 +1409,6 @@ def test_saved_test_uses_persisted_preferences_and_returns_json(monkeypatch) -> 
 
 
 def test_saved_test_records_missing_model_without_external_request(monkeypatch) -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     called = False
@@ -1470,7 +1434,6 @@ def test_saved_test_records_missing_model_without_external_request(monkeypatch) 
 
 
 def test_saved_test_skips_disabled_provider_without_writing_history(monkeypatch) -> None:
-    reset_db()
     client = TestClient(app)
     provider_id = setup_and_create_provider(client)
     with SessionLocal() as db:
@@ -1491,7 +1454,6 @@ def test_saved_test_skips_disabled_provider_without_writing_history(monkeypatch)
 
 
 def test_index_exposes_test_all_and_eligible_provider_rows() -> None:
-    reset_db()
     client = TestClient(app)
     enabled_id = setup_and_create_provider(client, "Enabled Relay")
     create = client.post(
@@ -1522,7 +1484,6 @@ def test_index_exposes_test_all_and_eligible_provider_rows() -> None:
 
 
 def test_proxy_delete_rejects_saved_test_route_reference() -> None:
-    reset_db()
     client = TestClient(app)
     client.post("/setup", data={"password": "long-test-password", "confirm_password": "long-test-password"})
     proxy_id = create_proxy(client)

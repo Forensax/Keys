@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, inspect, select
 from app import notifications as notifications_module
 from app import scheduler as scheduler_module
 from app.config import settings
-from app.db import Base, SessionLocal, engine, ensure_monitoring_columns
+from app.db import Base, SessionLocal, ensure_monitoring_columns
 from app.main import app
 from app.models import ConnectivityTest, MonitoringCheck, MonitoringTask, NetworkProxy, Provider
 from app.openai_compat import CLIENT_PROFILE_CODEX, ConnectivityTestResult
@@ -22,14 +22,9 @@ from app.security import (
     set_setting,
 )
 
-
-def reset_db() -> None:
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-
-
 def setup_client() -> TestClient:
     client = TestClient(app)
+    client.__enter__()
     response = client.post(
         "/setup",
         data={"password": "long-test-password", "confirm_password": "long-test-password"},
@@ -82,7 +77,6 @@ def test_monitoring_tables_are_created_and_migration_is_repeatable(tmp_path) -> 
 
 
 def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> None:
-    reset_db()
     client = setup_client()
     provider_id = create_provider(client, enabled=False)
 
@@ -134,7 +128,6 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
 
 
 def test_monitoring_checks_are_independent_and_recovery_notifications_are_stateful(monkeypatch) -> None:
-    reset_db()
     client = setup_client()
     provider_id = create_provider(client)
     authorize_background()
@@ -201,7 +194,6 @@ def test_monitoring_checks_are_independent_and_recovery_notifications_are_statef
 
 
 def test_monitoring_detects_disabled_provider_but_skips_archived_provider(monkeypatch) -> None:
-    reset_db()
     client = setup_client()
     provider_id = create_provider(client, enabled=False)
     authorize_background()
@@ -249,7 +241,6 @@ def test_monitoring_detects_disabled_provider_but_skips_archived_provider(monkey
 
 
 def test_telegram_config_is_encrypted_and_test_message_uses_proxy(monkeypatch) -> None:
-    reset_db()
     client = setup_client()
     proxy_response = client.post(
         "/proxies",
@@ -303,8 +294,7 @@ def test_telegram_config_is_encrypted_and_test_message_uses_proxy(monkeypatch) -
     client.close()
 
 
-def test_backup_v7_round_trips_monitoring_tasks_and_telegram_secrets() -> None:
-    reset_db()
+def test_backup_v7_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_reset) -> None:
     client = setup_client()
     provider_id = create_provider(client)
     client.post(
@@ -340,7 +330,7 @@ def test_backup_v7_round_trips_monitoring_tasks_and_telegram_secrets() -> None:
     assert secret_export["telegram"]["chat_id"] == "-100"
     client.close()
 
-    reset_db()
+    shared_db_reset()
     restored_client = setup_client()
     imported = restored_client.post(
         "/import",
