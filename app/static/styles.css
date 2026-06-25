@@ -1060,26 +1060,68 @@ tr:last-child td {
 }
 
 .monitoring-timeline-track {
-  background: #e5e7eb;
-  border-radius: 999px;
-  height: 24px;
+  height: 42px;
   min-width: 0;
   position: relative;
 }
 
+.monitoring-timeline-lane-label {
+  color: var(--muted);
+  font-size: 11px;
+  left: 0;
+  line-height: 1;
+  position: absolute;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.monitoring-timeline-lane-label.is-success {
+  top: 12px;
+}
+
+.monitoring-timeline-lane-label.is-failed {
+  top: 30px;
+}
+
+.monitoring-timeline-lane {
+  background: #e5e7eb;
+  border-radius: 999px;
+  height: 4px;
+  left: 0;
+  position: absolute;
+  right: 0;
+}
+
+.monitoring-timeline-plot {
+  bottom: 0;
+  left: 42px;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+.monitoring-timeline-lane.is-success {
+  top: 10px;
+}
+
+.monitoring-timeline-lane.is-failed {
+  top: 28px;
+}
+
 .monitoring-timeline-segment {
   border-radius: 999px;
-  height: 8px;
+  height: 6px;
   position: absolute;
-  top: 8px;
 }
 
 .monitoring-timeline-segment.is-success {
   background: #22c55e;
+  top: 9px;
 }
 
 .monitoring-timeline-segment.is-failed {
   background: #ef4444;
+  top: 27px;
 }
 
 .monitoring-timeline-segment.is-skipped {
@@ -1090,27 +1132,41 @@ tr:last-child td {
   background: #d1d5db;
 }
 
+.monitoring-timeline-segment.is-neutral {
+  height: 3px;
+  top: 20px;
+}
+
 .monitoring-timeline-marker {
-  background: #ffffff;
-  border: 2px solid currentColor;
+  background: currentColor;
+  border: 2px solid #ffffff;
   border-radius: 999px;
   color: var(--muted);
-  font-size: 11px;
-  line-height: 1;
-  padding: 3px 5px;
+  height: 12px;
   position: absolute;
-  top: -5px;
   transform: translateX(-50%);
-  white-space: nowrap;
+  width: 12px;
   z-index: 2;
 }
 
 .monitoring-timeline-marker.is-success {
   color: #15803d;
+  top: 6px;
 }
 
 .monitoring-timeline-marker.is-failed {
   color: #b91c1c;
+  top: 24px;
+}
+
+.monitoring-task-error {
+  display: inline-block;
+  margin-left: 6px;
+  max-width: calc(100% - 74px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
 }
 
 .monitoring-table .task-name,

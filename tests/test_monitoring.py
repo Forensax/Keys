@@ -205,6 +205,8 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert "monitoring-timeline-row" in task_table
     assert "过去 24 小时" in task_table
     assert "暂无可用率 · 故障 0 次" in task_table
+    assert "monitoring-timeline-lane is-success" in task_table
+    assert "monitoring-timeline-lane is-failed" in task_table
     assert "恢复" in task_table
     assert "立即检测" in task_table
     assert "停用" in task_table
@@ -217,7 +219,11 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert ".monitoring-table .schedule-actions {\n  flex-wrap: nowrap;" in styles
     assert ".monitoring-period-cell span {\n  display: block;" in styles
     assert ".monitoring-timeline-track" in styles
+    assert ".monitoring-timeline-plot" in styles
+    assert ".monitoring-timeline-lane.is-success" in styles
+    assert ".monitoring-timeline-lane.is-failed" in styles
     assert ".monitoring-timeline-segment.is-success" in styles
+    assert ".monitoring-task-error" in styles
     assert ".monitoring-check-table" in styles and "min-width: 1040px" in styles
 
     edit_page = client.get(f"/monitoring/tasks/{task_id}/edit")
@@ -248,6 +254,8 @@ def test_monitoring_page_renders_24_hour_status_timeline() -> None:
             network_route="direct",
             interval_minutes=5,
             next_run_at=now + timedelta(minutes=5),
+            last_status="failed",
+            last_error='HTTP 500: {"error":{"message":"当前模型 gpt-5.5 负载已经达到上限，请稍后重试"}}',
         )
         db.add(task)
         db.flush()
@@ -315,11 +323,17 @@ def test_monitoring_page_renders_24_hour_status_timeline() -> None:
     task_table = page.text[table_start:table_end]
     assert "monitoring-timeline-row" in task_table
     assert "monitoring-timeline-track" in task_table
+    assert "monitoring-timeline-lane is-success" in task_table
+    assert "monitoring-timeline-lane is-failed" in task_table
     assert "monitoring-timeline-segment is-success" in task_table
     assert "monitoring-timeline-segment is-failed" in task_table
-    assert "monitoring-timeline-segment is-skipped" in task_table
+    assert "monitoring-timeline-segment is-neutral is-skipped" in task_table
     assert "monitoring-timeline-marker is-failed" in task_table
     assert "monitoring-timeline-marker is-success" in task_table
+    assert 'aria-label="不可用"></span>' in task_table
+    assert 'aria-label="恢复"></span>' in task_table
+    assert "monitoring-task-error" in task_table
+    assert 'title="HTTP 500: {&#34;error&#34;:{&#34;message&#34;:&#34;当前模型 gpt-5.5 负载已经达到上限，请稍后重试&#34;}}"' in task_table
     assert "不可用" in task_table
     assert "恢复" in task_table
     assert "可用率 66.7% · 故障 1 次" in task_table

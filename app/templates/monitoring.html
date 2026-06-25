@@ -136,7 +136,7 @@
               </td>
               <td>
                 <span class="status {{ task.last_status or ('success' if task.enabled else 'disabled') }}">{{ "运行中" if task_is_running(task.id) else (task.last_status or ("启用" if task.enabled else "停用")) }}</span>
-                {% if task.last_error %}<span class="muted small" title="{{ task.last_error }}">{{ task.last_error }}</span>{% endif %}
+                {% if task.last_error %}<span class="muted small monitoring-task-error" title="{{ task.last_error }}">{{ task.last_error }}</span>{% endif %}
               </td>
               <td>{{ format_local_datetime(task.next_run_at) }}</td>
               <td class="action-cell"><div class="actions schedule-actions">
@@ -151,12 +151,22 @@
                 <div class="monitoring-timeline">
                   <span class="monitoring-timeline-label">过去 24 小时</span>
                   <div class="monitoring-timeline-track" aria-label="{{ task.name }} 过去 24 小时可用状态">
-                    {% for segment in timeline.segments %}
-                      <span class="monitoring-timeline-segment is-{{ segment.status }}" style="left: {{ segment.left_percent }}%; width: {{ segment.width_percent }}%;" title="{{ segment.title }}"></span>
-                    {% endfor %}
-                    {% for marker in timeline.markers %}
-                      <span class="monitoring-timeline-marker is-{{ marker.status }}" style="left: {{ marker.left_percent }}%;" title="{{ marker.title }}">{{ marker.label }}</span>
-                    {% endfor %}
+                    <span class="monitoring-timeline-lane-label is-success">可用</span>
+                    <span class="monitoring-timeline-lane-label is-failed">不可用</span>
+                    <div class="monitoring-timeline-plot">
+                      <span class="monitoring-timeline-lane is-success"></span>
+                      <span class="monitoring-timeline-lane is-failed"></span>
+                      {% for segment in timeline.segments %}
+                        {% if segment.status == 'success' or segment.status == 'failed' %}
+                          <span class="monitoring-timeline-segment is-{{ segment.status }}" style="left: {{ segment.left_percent }}%; width: {{ segment.width_percent }}%;" title="{{ segment.title }}"></span>
+                        {% else %}
+                          <span class="monitoring-timeline-segment is-neutral is-{{ segment.status }}" style="left: {{ segment.left_percent }}%; width: {{ segment.width_percent }}%;" title="{{ segment.title }}"></span>
+                        {% endif %}
+                      {% endfor %}
+                      {% for marker in timeline.markers %}
+                        <span class="monitoring-timeline-marker is-{{ marker.status }}" style="left: {{ marker.left_percent }}%;" title="{{ marker.title }}" aria-label="{{ marker.label }}"></span>
+                      {% endfor %}
+                    </div>
                   </div>
                   <span class="monitoring-timeline-summary">{{ timeline.summary }}</span>
                 </div>
