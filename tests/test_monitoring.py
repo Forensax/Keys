@@ -225,6 +225,8 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert ".monitoring-timeline-segment.is-success" in styles
     assert ".monitoring-timeline-segment.is-neutral" not in styles
     assert ".monitoring-task-error" in styles
+    assert ".monitoring-check-error" in styles
+    assert "white-space: nowrap;" in styles
     assert ".monitoring-check-table" in styles and "min-width: 1040px" in styles
 
     edit_page = client.get(f"/monitoring/tasks/{task_id}/edit")
@@ -343,6 +345,7 @@ def test_monitoring_page_renders_24_hour_status_timeline() -> None:
     assert "恢复" in task_table
     assert "可用率 66.7% · 故障 1 次" in task_table
     assert "upstream unavailable" in task_table
+    assert "monitoring-check-error" in page.text
     assert ".monitoring-check-table" in Path("app/static/styles.css").read_text(encoding="utf-8")
     client.close()
 

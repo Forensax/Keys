@@ -420,6 +420,14 @@ tr:last-child td {
   overflow-wrap: anywhere;
 }
 
+.monitoring-check-error {
+  display: block;
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .response-cell {
   max-width: 360px;
   overflow: hidden;

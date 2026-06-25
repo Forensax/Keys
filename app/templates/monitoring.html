@@ -192,7 +192,7 @@
         <td><span class="status {{ check.status }}">{{ check.status }}</span></td>
         <td>{{ check.latency_ms if check.latency_ms is not none else "" }}{% if check.latency_ms is not none %} ms{% endif %}{% if check.attempt_count %}<span class="muted small"> 检测 {{ check.attempt_count }}/{{ check.task.retry_attempts if check.task else check.attempt_count }}</span>{% endif %}</td>
         <td><span class="status {{ check.notification_status }}">{{ check.notification_status }}</span>{% if check.notification_event %}<span class="muted small"> · {{ "不可用" if check.notification_event == "failure" else "恢复" }}</span>{% endif %}{% if check.notification_attempt_count %}<span class="muted small"> 通知 {{ check.notification_attempt_count }}/{{ check.task.retry_attempts if check.task else check.notification_attempt_count }}</span>{% endif %}</td>
-        <td class="narrow" title="{{ check.error_message or check.notification_error }}">{{ check.error_message or check.notification_error or "—" }}</td>
+        <td class="narrow"><span class="monitoring-check-error" title="{{ check.error_message or check.notification_error }}">{{ check.error_message or check.notification_error or "—" }}</span></td>
       </tr>{% endfor %}</tbody>
     </table></div>
   {% else %}
