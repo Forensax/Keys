@@ -154,17 +154,15 @@
                     <span class="monitoring-timeline-lane-label is-success">可用</span>
                     <span class="monitoring-timeline-lane-label is-failed">不可用</span>
                     <div class="monitoring-timeline-plot">
-                      <span class="monitoring-timeline-lane is-success"></span>
-                      <span class="monitoring-timeline-lane is-failed"></span>
+                      <span class="monitoring-timeline-lane is-success" data-response-tooltip="可用状态线 · 绿色区段表示检测成功"></span>
+                      <span class="monitoring-timeline-lane is-failed" data-response-tooltip="不可用状态线 · 红色区段表示检测失败"></span>
                       {% for segment in timeline.segments %}
                         {% if segment.status == 'success' or segment.status == 'failed' %}
-                          <span class="monitoring-timeline-segment is-{{ segment.status }}" style="left: {{ segment.left_percent }}%; width: {{ segment.width_percent }}%;" title="{{ segment.title }}"></span>
-                        {% else %}
-                          <span class="monitoring-timeline-segment is-neutral is-{{ segment.status }}" style="left: {{ segment.left_percent }}%; width: {{ segment.width_percent }}%;" title="{{ segment.title }}"></span>
+                          <span class="monitoring-timeline-segment is-{{ segment.status }}" style="left: {{ segment.left_percent }}%; width: {{ segment.width_percent }}%;" data-response-tooltip="{{ segment.title }}"></span>
                         {% endif %}
                       {% endfor %}
                       {% for marker in timeline.markers %}
-                        <span class="monitoring-timeline-marker is-{{ marker.status }}" style="left: {{ marker.left_percent }}%;" title="{{ marker.title }}" aria-label="{{ marker.label }}"></span>
+                        <span class="monitoring-timeline-marker is-{{ marker.status }}" style="left: {{ marker.left_percent }}%;" data-response-tooltip="{{ marker.title }}" aria-label="{{ marker.label }}"></span>
                       {% endfor %}
                     </div>
                   </div>

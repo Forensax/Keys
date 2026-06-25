@@ -223,6 +223,7 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert ".monitoring-timeline-lane.is-success" in styles
     assert ".monitoring-timeline-lane.is-failed" in styles
     assert ".monitoring-timeline-segment.is-success" in styles
+    assert ".monitoring-timeline-segment.is-neutral" not in styles
     assert ".monitoring-task-error" in styles
     assert ".monitoring-check-table" in styles and "min-width: 1040px" in styles
 
@@ -327,9 +328,13 @@ def test_monitoring_page_renders_24_hour_status_timeline() -> None:
     assert "monitoring-timeline-lane is-failed" in task_table
     assert "monitoring-timeline-segment is-success" in task_table
     assert "monitoring-timeline-segment is-failed" in task_table
-    assert "monitoring-timeline-segment is-neutral is-skipped" in task_table
+    assert "monitoring-timeline-segment is-neutral is-skipped" not in task_table
     assert "monitoring-timeline-marker is-failed" in task_table
     assert "monitoring-timeline-marker is-success" in task_table
+    assert 'data-response-tooltip="可用状态线 · 绿色区段表示检测成功"' in task_table
+    assert 'data-response-tooltip="不可用状态线 · 红色区段表示检测失败"' in task_table
+    assert 'data-response-tooltip="' in task_table
+    assert 'title="upstream unavailable' not in task_table
     assert 'aria-label="不可用"></span>' in task_table
     assert 'aria-label="恢复"></span>' in task_table
     assert "monitoring-task-error" in task_table

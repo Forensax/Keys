@@ -1086,6 +1086,7 @@ tr:last-child td {
 .monitoring-timeline-lane {
   background: #e5e7eb;
   border-radius: 999px;
+  cursor: help;
   height: 4px;
   left: 0;
   position: absolute;
@@ -1110,6 +1111,7 @@ tr:last-child td {
 
 .monitoring-timeline-segment {
   border-radius: 999px;
+  cursor: help;
   height: 6px;
   position: absolute;
 }
@@ -1124,24 +1126,12 @@ tr:last-child td {
   top: 27px;
 }
 
-.monitoring-timeline-segment.is-skipped {
-  background: #94a3b8;
-}
-
-.monitoring-timeline-segment.is-nodata {
-  background: #d1d5db;
-}
-
-.monitoring-timeline-segment.is-neutral {
-  height: 3px;
-  top: 20px;
-}
-
 .monitoring-timeline-marker {
   background: currentColor;
   border: 2px solid #ffffff;
   border-radius: 999px;
   color: var(--muted);
+  cursor: help;
   height: 12px;
   position: absolute;
   transform: translateX(-50%);
