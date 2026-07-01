@@ -24,6 +24,8 @@ CLIENT_PROFILE_LABELS = {
     CLIENT_PROFILE_CLAUDE_CODE: "Claude Code",
 }
 VALID_CLIENT_PROFILES = frozenset(CLIENT_PROFILE_LABELS)
+CONNECTIVITY_CHECK_PROMPT = "请只回答结果：17 加 25 等于多少？"
+CONNECTIVITY_EXPECTED_ANSWER = "42"
 
 CODEX_USER_AGENT = "Codex Desktop/0.141.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.141.0)"
 CODEX_ORIGINATOR = "Codex Desktop"
@@ -104,9 +106,57 @@ def compact_json(value: Any, limit: int = 4000) -> str:
     return text[:limit]
 
 
+def _extract_response_text(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str):
+        return output_text
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        first_choice = choices[0]
+        if isinstance(first_choice, dict):
+            message = first_choice.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content
+            text = first_choice.get("text")
+            if isinstance(text, str):
+                return text
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        if parts:
+            return "".join(parts)
+    output = payload.get("output")
+    if isinstance(output, list):
+        parts = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content_items = item.get("content")
+            if not isinstance(content_items, list):
+                continue
+            for content_item in content_items:
+                if isinstance(content_item, dict) and isinstance(content_item.get("text"), str):
+                    parts.append(content_item["text"])
+        if parts:
+            return "".join(parts)
+    return ""
+
+
 def response_excerpt(response: httpx.Response | None = None, text: str | None = None, limit: int = 1200) -> str:
     if text is None and response is not None:
-        text = response.text
+        try:
+            text = _extract_response_text(response.json()) or response.text
+        except json.JSONDecodeError:
+            text = response.text
     return (text or "")[:limit]
 
 
@@ -126,6 +176,22 @@ def codex_response_excerpt(response: httpx.Response, limit: int = 1200) -> str:
             deltas.append(event["delta"])
     output_text = "".join(deltas).strip()
     return response_excerpt(response, text=output_text or None, limit=limit)
+
+
+def connectivity_answer_is_successful(text: str) -> bool:
+    normalized = (text or "").strip()
+    normalized = normalized.strip(" \t\r\n\"'`“”‘’")
+    normalized = normalized.rstrip("。．.！!，,")
+    normalized = normalized.replace(" ", "")
+    return normalized in {
+        CONNECTIVITY_EXPECTED_ANSWER,
+        "四十二",
+        "答案是42",
+        "答案为42",
+        "等于42",
+        "结果是42",
+        "结果为42",
+    }
 
 
 def _claude_code_metadata_user_id() -> str:
@@ -175,7 +241,7 @@ def build_connectivity_request(client_profile: str, model_id: str) -> tuple[str,
                 {
                     "type": "message",
                     "role": "user",
-                    "content": [{"type": "input_text", "text": "Reply exactly with pong."}],
+                    "content": [{"type": "input_text", "text": CONNECTIVITY_CHECK_PROMPT}],
                 },
             ],
             "tools": [],
@@ -199,7 +265,7 @@ def build_connectivity_request(client_profile: str, model_id: str) -> tuple[str,
     if profile == CLIENT_PROFILE_CLAUDE_CODE:
         return "/messages", {
             "model": model_id,
-            "messages": [{"role": "user", "content": "ping"}],
+            "messages": [{"role": "user", "content": CONNECTIVITY_CHECK_PROMPT}],
             "max_tokens": 8,
             "system": [{"type": "text", "text": CLAUDE_CODE_SYSTEM_PROMPT}],
             "metadata": {"user_id": _claude_code_metadata_user_id()},
@@ -207,13 +273,13 @@ def build_connectivity_request(client_profile: str, model_id: str) -> tuple[str,
     if profile == CLIENT_PROFILE_OPENAI_RESPONSES:
         return "/responses", {
             "model": model_id,
-            "input": "Reply exactly with pong.",
+            "input": CONNECTIVITY_CHECK_PROMPT,
             "max_output_tokens": 8,
             "store": False,
         }
     return "/chat/completions", {
         "model": model_id,
-        "messages": [{"role": "user", "content": "ping"}],
+        "messages": [{"role": "user", "content": CONNECTIVITY_CHECK_PROMPT}],
         "max_tokens": 8,
         "temperature": 0,
     }
@@ -289,6 +355,8 @@ async def run_connectivity_test(
         latency_ms = int((time.perf_counter() - started) * 1000)
         excerpt = codex_response_excerpt(response) if client_profile == CLIENT_PROFILE_CODEX else response_excerpt(response)
         if response.is_success:
+            if not connectivity_answer_is_successful(excerpt):
+                return ConnectivityTestResult("failed", latency_ms, f"模型未返回预期答案 42：{excerpt[:300]}", excerpt)
             return ConnectivityTestResult("success", latency_ms, "", excerpt)
         error_message = f"HTTP {response.status_code}: {excerpt[:300]}"
         if (

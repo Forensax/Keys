@@ -9,6 +9,7 @@ import pytest
 from app.openai_compat import (
     CLAUDE_CODE_BETA,
     CLAUDE_CODE_SYSTEM_PROMPT,
+    CONNECTIVITY_CHECK_PROMPT,
     CLIENT_PROFILE_CLAUDE_CODE,
     CLIENT_PROFILE_CODEX,
     CLIENT_PROFILE_OPENAI_RESPONSES,
@@ -72,7 +73,9 @@ async def test_chat_completion_success() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
         assert str(request.url) == "https://relay.example/v1/chat/completions"
-        return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
+        body = json.loads(request.content)
+        assert body["messages"] == [{"role": "user", "content": CONNECTIVITY_CHECK_PROMPT}]
+        return httpx.Response(200, json={"choices": [{"message": {"content": "42"}}]})
 
     result = await run_chat_completion_test(
         "https://relay.example/v1",
@@ -102,11 +105,11 @@ async def test_openai_responses_profile_builds_plain_responses_request() -> None
         body = json.loads(request.content)
         assert body == {
             "model": "gpt-responses",
-            "input": "Reply exactly with pong.",
+            "input": CONNECTIVITY_CHECK_PROMPT,
             "max_output_tokens": 8,
             "store": False,
         }
-        return httpx.Response(200, json={"output_text": "pong"})
+        return httpx.Response(200, json={"output_text": "42"})
 
     result = await run_connectivity_test(
         "https://relay.example/v1",
@@ -147,9 +150,10 @@ async def test_codex_profile_builds_responses_request() -> None:
         assert "openai-beta" not in request.headers
         body = json.loads(request.content)
         assert body["model"] == "gpt-codex"
-        assert body["instructions"]
+        assert body["instructions"] == "You are Codex, a coding agent based on GPT-5. Reply briefly."
         assert body["input"][0]["role"] == "developer"
-        assert body["input"][1]["content"][0]["text"] == "Reply exactly with pong."
+        assert body["input"][0]["content"][0]["text"] == "This is a connectivity check. Do not call tools."
+        assert body["input"][1]["content"][0]["text"] == CONNECTIVITY_CHECK_PROMPT
         assert body["tools"] == []
         assert body["tool_choice"] == "auto"
         assert body["parallel_tool_calls"] is True
@@ -180,9 +184,9 @@ async def test_codex_profile_builds_responses_request() -> None:
             headers={"content-type": "text/event-stream"},
             text=(
                 'event: response.output_text.delta\n'
-                'data: {"type":"response.output_text.delta","delta":"po"}\n\n'
+                'data: {"type":"response.output_text.delta","delta":"4"}\n\n'
                 'event: response.output_text.delta\n'
-                'data: {"type":"response.output_text.delta","delta":"ng"}\n\n'
+                'data: {"type":"response.output_text.delta","delta":"2"}\n\n'
                 'data: [DONE]\n\n'
             ),
         )
@@ -196,7 +200,7 @@ async def test_codex_profile_builds_responses_request() -> None:
     )
 
     assert result.status == "success"
-    assert result.raw_response_excerpt == "pong"
+    assert result.raw_response_excerpt == "42"
 
 
 @pytest.mark.asyncio
@@ -213,13 +217,13 @@ async def test_claude_code_profile_builds_messages_request() -> None:
         assert request.headers["anthropic-dangerous-direct-browser-access"] == "true"
         body = json.loads(request.content)
         assert body["model"] == "claude-test"
-        assert body["messages"] == [{"role": "user", "content": "ping"}]
+        assert body["messages"] == [{"role": "user", "content": CONNECTIVITY_CHECK_PROMPT}]
         assert body["system"] == [{"type": "text", "text": CLAUDE_CODE_SYSTEM_PROMPT}]
         assert re.fullmatch(
             r"user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9a-f-]{36}",
             body["metadata"]["user_id"],
         )
-        return httpx.Response(200, text="not-json")
+        return httpx.Response(200, text="答案是42")
 
     result = await run_connectivity_test(
         "https://relay.example/v1",
@@ -230,7 +234,41 @@ async def test_claude_code_profile_builds_messages_request() -> None:
     )
 
     assert result.status == "success"
-    assert result.raw_response_excerpt == "not-json"
+    assert result.raw_response_excerpt == "答案是42"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["42。", "42.", "四十二", "答案是42", "等于42"])
+async def test_connectivity_answer_allows_light_formatting(answer: str) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": answer}}]})
+
+    result = await run_chat_completion_test(
+        "https://relay.example/v1",
+        "sk-test",
+        "gpt-test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result.status == "success"
+    assert result.error_message == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["41", "不知道"])
+async def test_connectivity_answer_must_match_expected_result(answer: str) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": answer}}]})
+
+    result = await run_chat_completion_test(
+        "https://relay.example/v1",
+        "sk-test",
+        "gpt-test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result.status == "failed"
+    assert "模型未返回预期答案 42" in result.error_message
 
 
 @pytest.mark.asyncio
