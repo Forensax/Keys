@@ -25,7 +25,6 @@ CLIENT_PROFILE_LABELS = {
 }
 VALID_CLIENT_PROFILES = frozenset(CLIENT_PROFILE_LABELS)
 CONNECTIVITY_CHECK_PROMPT = "请只回答结果：17 加 25 等于多少？"
-CONNECTIVITY_EXPECTED_ANSWER = "42"
 
 CODEX_USER_AGENT = "Codex Desktop/0.141.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.141.0)"
 CODEX_ORIGINATOR = "Codex Desktop"
@@ -176,22 +175,6 @@ def codex_response_excerpt(response: httpx.Response, limit: int = 1200) -> str:
             deltas.append(event["delta"])
     output_text = "".join(deltas).strip()
     return response_excerpt(response, text=output_text or None, limit=limit)
-
-
-def connectivity_answer_is_successful(text: str) -> bool:
-    normalized = (text or "").strip()
-    normalized = normalized.strip(" \t\r\n\"'`“”‘’")
-    normalized = normalized.rstrip("。．.！!，,")
-    normalized = normalized.replace(" ", "")
-    return normalized in {
-        CONNECTIVITY_EXPECTED_ANSWER,
-        "四十二",
-        "答案是42",
-        "答案为42",
-        "等于42",
-        "结果是42",
-        "结果为42",
-    }
 
 
 def _claude_code_metadata_user_id() -> str:
@@ -355,8 +338,6 @@ async def run_connectivity_test(
         latency_ms = int((time.perf_counter() - started) * 1000)
         excerpt = codex_response_excerpt(response) if client_profile == CLIENT_PROFILE_CODEX else response_excerpt(response)
         if response.is_success:
-            if not connectivity_answer_is_successful(excerpt):
-                return ConnectivityTestResult("failed", latency_ms, f"模型未返回预期答案 42：{excerpt[:300]}", excerpt)
             return ConnectivityTestResult("success", latency_ms, "", excerpt)
         error_message = f"HTTP {response.status_code}: {excerpt[:300]}"
         if (

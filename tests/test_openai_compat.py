@@ -238,8 +238,8 @@ async def test_claude_code_profile_builds_messages_request() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("answer", ["42。", "42.", "四十二", "答案是42", "等于42"])
-async def test_connectivity_answer_allows_light_formatting(answer: str) -> None:
+@pytest.mark.parametrize("answer", ["41", "不知道"])
+async def test_successful_http_response_is_connectivity_success_even_with_unexpected_answer(answer: str) -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"choices": [{"message": {"content": answer}}]})
 
@@ -252,23 +252,7 @@ async def test_connectivity_answer_allows_light_formatting(answer: str) -> None:
 
     assert result.status == "success"
     assert result.error_message == ""
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("answer", ["41", "不知道"])
-async def test_connectivity_answer_must_match_expected_result(answer: str) -> None:
-    def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"choices": [{"message": {"content": answer}}]})
-
-    result = await run_chat_completion_test(
-        "https://relay.example/v1",
-        "sk-test",
-        "gpt-test",
-        transport=httpx.MockTransport(handler),
-    )
-
-    assert result.status == "failed"
-    assert "模型未返回预期答案 42" in result.error_message
+    assert result.raw_response_excerpt == answer
 
 
 @pytest.mark.asyncio
