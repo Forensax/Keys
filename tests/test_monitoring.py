@@ -280,7 +280,8 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert ".monitoring-timeline-segment.is-success" in styles
     assert ".monitoring-timeline-segment.is-neutral" not in styles
     assert ".monitoring-task-error" in styles
-    assert ".monitoring-check-error" in styles
+    assert ".response-cell" in styles
+    assert ".response-preview" in styles
     assert ".dismissible-panel {\n  position: relative;" in styles
     assert ".panel-close" in styles
     assert "white-space: nowrap;" in styles
@@ -331,6 +332,7 @@ def test_monitoring_page_renders_24_hour_status_timeline() -> None:
                 network_route=task.network_route,
                 status="success",
                 latency_ms=120,
+                raw_response_excerpt="",
                 checked_at=now - timedelta(hours=6),
             ),
             MonitoringCheck(
@@ -344,6 +346,9 @@ def test_monitoring_page_renders_24_hour_status_timeline() -> None:
                 network_route=task.network_route,
                 status="failed",
                 error_message="upstream unavailable",
+                raw_response_excerpt='{"error":"hidden detail"}',
+                notification_status="failed",
+                notification_error="RuntimeError: TG down",
                 checked_at=now - timedelta(hours=4),
             ),
             MonitoringCheck(
@@ -370,6 +375,7 @@ def test_monitoring_page_renders_24_hour_status_timeline() -> None:
                 network_route=task.network_route,
                 status="success",
                 latency_ms=98,
+                raw_response_excerpt='{"output":"healthy"}',
                 checked_at=now - timedelta(hours=2),
             ),
         ]
@@ -401,8 +407,19 @@ def test_monitoring_page_renders_24_hour_status_timeline() -> None:
     assert "不可用" in task_table
     assert "恢复" in task_table
     assert "可用率 66.7% · 故障 1 次" in task_table
-    assert "upstream unavailable" in task_table
-    assert "monitoring-check-error" in page.text
+    recent_start = page.text.index('<table class="monitoring-check-table">')
+    recent_end = page.text.index("</table>", recent_start)
+    recent_table = page.text[recent_start:recent_end]
+    assert "<th>响应</th>" in recent_table
+    assert "<th>错误</th>" not in recent_table
+    assert "response-cell" in recent_table
+    assert "response-preview" in recent_table
+    assert "{&#34;output&#34;:&#34;healthy&#34;}" in recent_table
+    assert "成功（响应正文为空）" in recent_table
+    assert "upstream unavailable" in recent_table
+    assert "{&#34;error&#34;:&#34;hidden detail&#34;}" not in recent_table
+    assert 'data-response-tooltip="RuntimeError: TG down"' in recent_table
+    assert "monitoring-check-error" not in page.text
     assert ".monitoring-check-table" in Path("app/static/styles.css").read_text(encoding="utf-8")
     client.close()
 
