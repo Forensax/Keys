@@ -1012,10 +1012,90 @@ tr:last-child td {
   min-height: 150px;
 }
 
-.schedule-table,
 .schedule-run-table,
 .monitoring-check-table {
   min-width: 1040px;
+}
+
+.schedule-table {
+  min-width: 0;
+}
+
+.schedule-task-panel {
+  margin-bottom: 12px;
+}
+
+.schedule-recent-panel {
+  margin-top: 0;
+}
+
+.schedule-table th:nth-child(1) {
+  width: 15%;
+}
+
+.schedule-table th:nth-child(2) {
+  width: 15%;
+}
+
+.schedule-table th:nth-child(3) {
+  width: 12%;
+}
+
+.schedule-table th:nth-child(4) {
+  width: 8%;
+}
+
+.schedule-table th:nth-child(5) {
+  width: 14%;
+}
+
+.schedule-table th:nth-child(6) {
+  width: 13%;
+}
+
+.schedule-table th:nth-child(7) {
+  width: 23%;
+}
+
+.schedule-table th,
+.schedule-table td {
+  padding: 9px 10px;
+}
+
+.schedule-table td:nth-child(1),
+.schedule-table td:nth-child(2),
+.schedule-table td:nth-child(3),
+.schedule-table td:nth-child(5),
+.schedule-table td:nth-child(6) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-table .action-cell {
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.schedule-table .schedule-actions {
+  flex-wrap: nowrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.schedule-table .schedule-actions form {
+  display: inline-flex;
+}
+
+.schedule-table .schedule-actions button.small,
+.schedule-table .schedule-actions .button.small {
+  border-radius: 6px;
+  box-sizing: border-box;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+  min-height: 30px;
+  padding: 4px 7px;
 }
 
 .monitoring-table {

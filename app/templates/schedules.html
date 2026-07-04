@@ -8,17 +8,24 @@
     <h1>定时任务</h1>
     <p class="muted">自动使用每个中转站已保存的模型、客户端模式和网络路径执行连通性测试。</p>
   </div>
+  <div class="actions">
+    <a class="button" href="/schedules?panel=vault">锁定后台密钥</a>
+    <a class="button primary" href="/schedules?panel=new_task">新建定时任务</a>
+  </div>
 </section>
 
+{% if active_panel == "vault" %}
 {% if vault_state == "ready" %}
-  <div class="panel scheduler-vault success-panel">
+  <div class="panel scheduler-vault success-panel dismissible-panel">
+    <a class="panel-close" href="/schedules" aria-label="关闭并返回任务列表" title="关闭">×</a>
     <div><strong>后台密钥可用</strong><p class="muted small">应用重启后任务仍可继续运行。</p></div>
     <form method="post" action="/schedules/lock" onsubmit="return confirm('锁定后台密钥会同时停用全部定时任务，确定继续吗？');">
       <button type="submit">锁定后台密钥</button>
     </form>
   </div>
 {% else %}
-  <div class="panel scheduler-vault warning-panel">
+  <div class="panel scheduler-vault warning-panel dismissible-panel">
+    <a class="panel-close" href="/schedules" aria-label="关闭并返回任务列表" title="关闭">×</a>
     <div>
       <strong>{{ "SESSION_SECRET 未显式配置" if vault_state == "unconfigured" else ("后台密钥已失效" if vault_state == "locked" else "后台密钥尚未授权") }}</strong>
       <p class="muted small">
@@ -33,8 +40,11 @@
     {% endif %}
   </div>
 {% endif %}
+{% endif %}
 
-<section class="panel schedule-create-panel">
+{% if active_panel == "new_task" %}
+<section class="panel schedule-create-panel dismissible-panel">
+  <a class="panel-close" href="/schedules" aria-label="关闭并返回任务列表" title="关闭">×</a>
   <h2>新建任务</h2>
   {% if errors %}
     <div class="flash error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>
@@ -75,8 +85,9 @@
     <div class="form-actions full-span"><button class="primary" type="submit">创建任务</button></div>
   </form>
 </section>
+{% endif %}
 
-<section class="panel">
+<section class="panel schedule-task-panel">
   <div class="panel-head"><div><h2>任务列表</h2><p class="muted">共 {{ tasks|length }} 个任务</p></div></div>
   {% if tasks %}
     <div class="table-wrap">
@@ -108,7 +119,7 @@
   {% else %}<p class="muted">还没有定时任务。</p>{% endif %}
 </section>
 
-<section class="panel">
+<section class="panel schedule-recent-panel">
   <h2>最近运行</h2>
   {% if recent_runs %}
     <div class="table-wrap"><table class="schedule-run-table">

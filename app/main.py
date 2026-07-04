@@ -1378,7 +1378,10 @@ def schedule_page_context(
     *,
     form_values: dict[str, Any] | None = None,
     errors: list[str] | None = None,
+    active_panel: str | None = None,
 ) -> dict[str, Any]:
+    if active_panel not in {"vault", "new_task"}:
+        active_panel = ""
     tasks = list(
         db.scalars(
             select(ScheduledTask)
@@ -1409,6 +1412,7 @@ def schedule_page_context(
         "task_is_running": task_is_running,
         "form_values": form_values or {},
         "errors": errors or [],
+        "active_panel": active_panel,
         "app_timezone": settings.app_timezone,
     }
 
@@ -1497,9 +1501,10 @@ def disable_background_tasks(db: Session) -> None:
 def schedules_page(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
+    panel: Annotated[str | None, Query()] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
-    return render(request, "schedules.html", schedule_page_context(db))
+    return render(request, "schedules.html", schedule_page_context(db, active_panel=panel))
 
 
 @app.post("/schedules/authorize")
@@ -1511,15 +1516,15 @@ def schedules_authorize(
 ) -> Response:
     if not settings.session_secret_configured:
         flash(request, "必须在 .env 中显式设置稳定的 SESSION_SECRET 后才能启用后台任务。", "error")
-        return redirect("/schedules")
+        return redirect("/schedules?panel=vault")
     if not password or not authenticate(db, password) or not check_session_password_proof(request, db, password):
         flash(request, "密码确认失败，后台密钥未授权。", "error")
-        return redirect("/schedules")
+        return redirect("/schedules?panel=vault")
     authorize_scheduler_vault(db, password, settings.session_secret)
     prepare_enabled_background_tasks(db)
     db.commit()
     flash(request, "后台密钥已授权，定时任务可在应用重启后继续运行。")
-    return redirect("/schedules")
+    return redirect("/schedules?panel=vault")
 
 
 @app.post("/schedules/lock")
@@ -1532,7 +1537,7 @@ def schedules_lock(
     disable_background_tasks(db)
     db.commit()
     flash(request, "后台密钥已锁定，所有后台任务已停用。")
-    return redirect("/schedules")
+    return redirect("/schedules?panel=vault")
 
 
 @app.post("/schedules")
@@ -1566,7 +1571,12 @@ def schedule_create(
         return render(
             request,
             "schedules.html",
-            schedule_page_context(db, form_values={**values, "enabled": should_enable}, errors=errors),
+            schedule_page_context(
+                db,
+                form_values={**values, "enabled": should_enable},
+                errors=errors,
+                active_panel="new_task",
+            ),
             400,
         )
     task = ScheduledTask()

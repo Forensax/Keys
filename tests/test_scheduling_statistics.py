@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
@@ -224,6 +225,96 @@ def test_schedule_and_statistics_pages_use_real_history_only() -> None:
     assert "当前筛选范围内没有测试历史" in legacy_demo_url.text
     with SessionLocal() as db:
         assert len(db.scalars(select(ConnectivityTest)).all()) == before
+    client.close()
+
+
+def test_schedules_page_uses_collapsed_panels_and_compact_task_table() -> None:
+    client = setup_client()
+
+    default_page = client.get("/schedules")
+    assert default_page.status_code == 200
+    assert '<a class="button" href="/schedules?panel=vault">锁定后台密钥</a>' in default_page.text
+    assert '<a class="button primary" href="/schedules?panel=new_task">新建定时任务</a>' in default_page.text
+    assert 'name="password"' not in default_page.text
+    assert 'name="target_type"' not in default_page.text
+    assert "任务列表" in default_page.text
+    assert "最近运行" in default_page.text
+
+    vault_page = client.get("/schedules?panel=vault")
+    assert vault_page.status_code == 200
+    assert "后台密钥" in vault_page.text
+    assert 'class="panel-close"' in vault_page.text
+    assert 'href="/schedules"' in vault_page.text
+    assert 'aria-label="关闭并返回任务列表"' in vault_page.text
+    assert 'name="target_type"' not in vault_page.text
+
+    new_task_page = client.get("/schedules?panel=new_task")
+    assert new_task_page.status_code == 200
+    assert "新建任务" in new_task_page.text
+    assert 'name="target_type"' in new_task_page.text
+    assert 'class="panel-close"' in new_task_page.text
+    assert "后台密钥可用" not in new_task_page.text
+
+    invalid = client.post(
+        "/schedules",
+        data={
+            "name": "",
+            "target_type": "all",
+            "schedule_kind": "interval",
+            "interval_minutes": "60",
+        },
+        follow_redirects=False,
+    )
+    assert invalid.status_code == 400
+    assert "任务名称不能为空。" in invalid.text
+    assert "新建任务" in invalid.text
+    assert 'name="target_type"' in invalid.text
+
+    failed_authorize = client.post(
+        "/schedules/authorize",
+        data={"password": "wrong-password"},
+        follow_redirects=False,
+    )
+    assert failed_authorize.status_code == 303
+    assert failed_authorize.headers["location"] == "/schedules?panel=vault"
+
+    locked = client.post("/schedules/lock", follow_redirects=False)
+    assert locked.status_code == 303
+    assert locked.headers["location"] == "/schedules?panel=vault"
+
+    created = client.post(
+        "/schedules",
+        data={
+            "name": "compact task",
+            "target_type": "all",
+            "schedule_kind": "interval",
+            "interval_minutes": "60",
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    page = client.get("/schedules")
+    assert page.status_code == 200
+    assert '<section class="panel schedule-task-panel">' in page.text
+    assert '<section class="panel schedule-recent-panel">' in page.text
+    task_table_start = page.text.index('<table class="schedule-table">')
+    task_table_end = page.text.index("</table>", task_table_start)
+    task_table = page.text[task_table_start:task_table_end]
+    assert "compact task" in task_table
+    assert "全部已启用中转站" in task_table
+    assert "每 60 分钟" in task_table
+    assert "立即运行" in task_table
+    assert "启用" in task_table
+    assert "编辑" in task_table
+    assert "删除" in task_table
+
+    styles = Path("app/static/styles.css").read_text(encoding="utf-8")
+    assert ".schedule-table,\n.schedule-run-table" not in styles
+    assert ".schedule-table {\n  min-width: 0;" in styles
+    assert ".schedule-run-table,\n.monitoring-check-table" in styles
+    assert ".schedule-task-panel {\n  margin-bottom: 12px;" in styles
+    assert ".schedule-recent-panel {\n  margin-top: 0;" in styles
+    assert ".schedule-table .schedule-actions button.small,\n.schedule-table .schedule-actions .button.small" in styles
     client.close()
 
 
