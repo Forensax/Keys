@@ -428,48 +428,62 @@
     syncSelectedModel(modelInput.value);
   }
 
+  async function runBatchProviderTests(button, rows, emptyMessage) {
+    if (!rows.length) {
+      showToast(emptyMessage, true);
+      return;
+    }
+    button.disabled = true;
+    const originalText = button.textContent;
+    button.textContent = "测试中";
+    rows.forEach((row) => renderTestResult(row.querySelector("[data-test-result]"), { status: "testing" }));
+    let nextIndex = 0;
+    let succeeded = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    async function worker() {
+      while (nextIndex < rows.length) {
+        const row = rows[nextIndex];
+        nextIndex += 1;
+        const result = await runSavedProviderTest(row, {
+          failureMessage: "批量测试请求失败",
+          renderTesting: false,
+        });
+        if (result.status === "success") {
+          succeeded += 1;
+        } else if (result.status === "skipped") {
+          skipped += 1;
+        } else {
+          failed += 1;
+        }
+      }
+    }
+
+    const workers = Array.from({ length: Math.min(5, rows.length) }, () => worker());
+    await Promise.all(workers);
+    button.disabled = false;
+    button.textContent = originalText;
+    showToast(`测试完成：成功 ${succeeded}，失败 ${failed}，跳过 ${skipped}`, failed > 0);
+  }
+
   const testAllButton = document.querySelector("[data-test-all]");
   if (testAllButton) {
     testAllButton.addEventListener("click", async () => {
       const rows = Array.from(document.querySelectorAll('[data-provider-row][data-provider-enabled="true"]'));
-      if (!rows.length) {
-        showToast("没有已启用的中转站", true);
-        return;
-      }
-      testAllButton.disabled = true;
-      const originalText = testAllButton.textContent;
-      testAllButton.textContent = "测试中";
-      rows.forEach((row) => renderTestResult(row.querySelector("[data-test-result]"), { status: "testing" }));
-      let nextIndex = 0;
-      let succeeded = 0;
-      let failed = 0;
-      let skipped = 0;
-
-      async function worker() {
-        while (nextIndex < rows.length) {
-          const row = rows[nextIndex];
-          nextIndex += 1;
-          const result = await runSavedProviderTest(row, {
-            failureMessage: "批量测试请求失败",
-            renderTesting: false,
-          });
-          if (result.status === "success") {
-            succeeded += 1;
-          } else if (result.status === "skipped") {
-            skipped += 1;
-          } else {
-            failed += 1;
-          }
-        }
-      }
-
-      const workers = Array.from({ length: Math.min(5, rows.length) }, () => worker());
-      await Promise.all(workers);
-      testAllButton.disabled = false;
-      testAllButton.textContent = originalText;
-      showToast(`测试完成：成功 ${succeeded}，失败 ${failed}，跳过 ${skipped}`, failed > 0);
+      await runBatchProviderTests(testAllButton, rows, "没有已启用的中转站");
     });
   }
+
+  document.querySelectorAll("[data-test-group]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const section = button.closest(".provider-group-section");
+      const rows = section
+        ? Array.from(section.querySelectorAll('[data-provider-row][data-provider-enabled="true"]'))
+        : [];
+      await runBatchProviderTests(button, rows, "这个分组没有已启用的中转站");
+    });
+  });
 
   document.querySelectorAll("[data-test-single]").forEach((button) => {
     button.addEventListener("click", async () => {

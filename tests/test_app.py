@@ -280,6 +280,7 @@ def test_provider_groups_render_in_creation_order_and_reuse_names_case_insensiti
         assert zulu_two.group.name == "Zulu"
 
     home = client.get("/").text
+    assert home.index("新增中转站") < home.index("测试全部")
     assert home.count('class="table-wrap home-table-wrap"') == 3
     assert home.index(f'href="/providers/{ungrouped_id}"') < home.index(
         '<h2 class="provider-group-title">Zulu</h2>'
@@ -287,6 +288,9 @@ def test_provider_groups_render_in_creation_order_and_reuse_names_case_insensiti
     assert home.index('<h2 class="provider-group-title">Zulu</h2>') < home.index(
         '<h2 class="provider-group-title">Alpha</h2>'
     )
+    assert home.count('class="provider-group-head"') == 2
+    assert home.count("data-test-group") == 2
+    assert home.count("测试分组") == 2
     assert home.count("data-provider-row") == 4
 
     edit = client.get(f"/providers/{zulu_two_id}").text
@@ -565,6 +569,17 @@ def test_model_fill_click_can_infer_client_profile_from_model_name() -> None:
     assert 'return "claude_code";' in script
     assert 'clientProfileSelect.dispatchEvent(new Event("change", { bubbles: true }))' in script
     assert 'modelInput.dispatchEvent(new Event("change", { bubbles: true }))' in script
+
+
+def test_home_batch_testing_supports_all_and_group_scopes() -> None:
+    script = (PROJECT_ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "async function runBatchProviderTests" in script
+    assert 'document.querySelectorAll(\'[data-provider-row][data-provider-enabled="true"]\')' in script
+    assert 'document.querySelectorAll("[data-test-group]")' in script
+    assert 'button.closest(".provider-group-section")' in script
+    assert 'section.querySelectorAll(\'[data-provider-row][data-provider-enabled="true"]\')' in script
+    assert "这个分组没有已启用的中转站" in script
 
 
 def test_manual_models_are_added_sorted_and_only_manual_models_can_be_deleted() -> None:

@@ -9,8 +9,8 @@
     <p class="muted">共 {{ providers|length }} 个 OpenAI 兼容中转站</p>
   </div>
   <div class="button-row">
-    {% if providers %}<button type="button" data-test-all>测试全部</button>{% endif %}
     <a class="button primary" href="/providers/new">新增中转站</a>
+    {% if providers %}<button type="button" data-test-all>测试全部</button>{% endif %}
   </div>
 </section>
 
@@ -136,7 +136,10 @@
   {% endif %}
   {% for group, group_providers in group_sections %}
     <section class="provider-group-section">
-      <h2 class="provider-group-title">{{ group.name }}</h2>
+      <div class="provider-group-head">
+        <h2 class="provider-group-title">{{ group.name }}</h2>
+        <button type="button" data-test-group>测试分组</button>
+      </div>
       {{ provider_table(group_providers, default_model_ids) }}
     </section>
   {% endfor %}
