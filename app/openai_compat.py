@@ -24,7 +24,13 @@ CLIENT_PROFILE_LABELS = {
     CLIENT_PROFILE_CLAUDE_CODE: "Claude Code",
 }
 VALID_CLIENT_PROFILES = frozenset(CLIENT_PROFILE_LABELS)
-CONNECTIVITY_CHECK_PROMPT = "请只回答结果：17 加 25 等于多少？"
+CONNECTIVITY_PROMPT_OPERATORS = ("加", "减", "乘", "除以")
+CONNECTIVITY_DIVISION_PAIRS = tuple(
+    (divisor * quotient, divisor)
+    for divisor in range(10, 100)
+    for quotient in range(1, 10)
+    if 10 <= divisor * quotient <= 99
+)
 
 CODEX_USER_AGENT = "Codex Desktop/0.141.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.141.0)"
 CODEX_ORIGINATOR = "Codex Desktop"
@@ -68,6 +74,26 @@ def validate_client_profile(client_profile: str) -> str:
 
 def client_profile_label(client_profile: str) -> str:
     return CLIENT_PROFILE_LABELS.get(client_profile, client_profile)
+
+
+def _random_two_digit_number() -> int:
+    return 10 + secrets.randbelow(90)
+
+
+def generate_connectivity_check_prompt(operator: str | None = None) -> str:
+    selected_operator = operator or secrets.choice(CONNECTIVITY_PROMPT_OPERATORS)
+    if selected_operator not in CONNECTIVITY_PROMPT_OPERATORS:
+        raise ValueError("不支持的计算题运算符。")
+
+    if selected_operator == "除以":
+        left, right = secrets.choice(CONNECTIVITY_DIVISION_PAIRS)
+    else:
+        left = _random_two_digit_number()
+        right = _random_two_digit_number()
+        if selected_operator == "减" and left < right:
+            left, right = right, left
+
+    return f"请只回答结果：{left} {selected_operator} {right} 等于多少？"
 
 
 def auth_headers(api_key: str, client_profile: str = CLIENT_PROFILE_OPENAI_CHAT) -> dict[str, str]:
@@ -210,6 +236,7 @@ def _codex_request_context() -> dict[str, str]:
 
 def build_connectivity_request(client_profile: str, model_id: str) -> tuple[str, dict[str, Any]]:
     profile = validate_client_profile(client_profile)
+    prompt = generate_connectivity_check_prompt()
     if profile == CLIENT_PROFILE_CODEX:
         context = _codex_request_context()
         return "/responses", {
@@ -224,7 +251,7 @@ def build_connectivity_request(client_profile: str, model_id: str) -> tuple[str,
                 {
                     "type": "message",
                     "role": "user",
-                    "content": [{"type": "input_text", "text": CONNECTIVITY_CHECK_PROMPT}],
+                    "content": [{"type": "input_text", "text": prompt}],
                 },
             ],
             "tools": [],
@@ -248,7 +275,7 @@ def build_connectivity_request(client_profile: str, model_id: str) -> tuple[str,
     if profile == CLIENT_PROFILE_CLAUDE_CODE:
         return "/messages", {
             "model": model_id,
-            "messages": [{"role": "user", "content": CONNECTIVITY_CHECK_PROMPT}],
+            "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 8,
             "system": [{"type": "text", "text": CLAUDE_CODE_SYSTEM_PROMPT}],
             "metadata": {"user_id": _claude_code_metadata_user_id()},
@@ -256,13 +283,13 @@ def build_connectivity_request(client_profile: str, model_id: str) -> tuple[str,
     if profile == CLIENT_PROFILE_OPENAI_RESPONSES:
         return "/responses", {
             "model": model_id,
-            "input": CONNECTIVITY_CHECK_PROMPT,
+            "input": prompt,
             "max_output_tokens": 8,
             "store": False,
         }
     return "/chat/completions", {
         "model": model_id,
-        "messages": [{"role": "user", "content": CONNECTIVITY_CHECK_PROMPT}],
+        "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 8,
         "temperature": 0,
     }

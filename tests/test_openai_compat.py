@@ -9,16 +9,54 @@ import pytest
 from app.openai_compat import (
     CLAUDE_CODE_BETA,
     CLAUDE_CODE_SYSTEM_PROMPT,
-    CONNECTIVITY_CHECK_PROMPT,
     CLIENT_PROFILE_CLAUDE_CODE,
     CLIENT_PROFILE_CODEX,
     CLIENT_PROFILE_OPENAI_RESPONSES,
     build_url,
     fetch_models,
+    generate_connectivity_check_prompt,
     normalize_base_url,
     run_chat_completion_test,
     run_connectivity_test,
 )
+
+
+CONNECTIVITY_PROMPT_RE = re.compile(r"^请只回答结果：(\d{2}) (加|减|乘|除以) (\d{2}) 等于多少？$")
+
+
+def parse_connectivity_prompt(prompt: str) -> tuple[int, str, int]:
+    match = CONNECTIVITY_PROMPT_RE.fullmatch(prompt)
+    assert match is not None
+    left_text, operator, right_text = match.groups()
+    return int(left_text), operator, int(right_text)
+
+
+def assert_valid_connectivity_prompt(prompt: str) -> None:
+    left, operator, right = parse_connectivity_prompt(prompt)
+    if operator == "减":
+        assert left >= right
+    if operator == "除以":
+        assert left % right == 0
+
+
+@pytest.mark.parametrize("operator", ["加", "减", "乘", "除以"])
+def test_generate_connectivity_check_prompt_builds_valid_two_digit_math(operator: str) -> None:
+    prompt = generate_connectivity_check_prompt(operator)
+
+    left, parsed_operator, right = parse_connectivity_prompt(prompt)
+
+    assert parsed_operator == operator
+    assert 10 <= left <= 99
+    assert 10 <= right <= 99
+    if operator == "减":
+        assert left >= right
+    if operator == "除以":
+        assert left % right == 0
+
+
+def test_generate_connectivity_check_prompt_rejects_unknown_operator() -> None:
+    with pytest.raises(ValueError, match="不支持"):
+        generate_connectivity_check_prompt("取余")
 
 
 def test_base_url_normalization() -> None:
@@ -74,7 +112,8 @@ async def test_chat_completion_success() -> None:
         calls.append(request)
         assert str(request.url) == "https://relay.example/v1/chat/completions"
         body = json.loads(request.content)
-        assert body["messages"] == [{"role": "user", "content": CONNECTIVITY_CHECK_PROMPT}]
+        assert body["messages"][0]["role"] == "user"
+        assert_valid_connectivity_prompt(body["messages"][0]["content"])
         return httpx.Response(200, json={"choices": [{"message": {"content": "42"}}]})
 
     result = await run_chat_completion_test(
@@ -103,12 +142,10 @@ async def test_openai_responses_profile_builds_plain_responses_request() -> None
         assert "x-codex-window-id" not in request.headers
         assert "x-codex-turn-metadata" not in request.headers
         body = json.loads(request.content)
-        assert body == {
-            "model": "gpt-responses",
-            "input": CONNECTIVITY_CHECK_PROMPT,
-            "max_output_tokens": 8,
-            "store": False,
-        }
+        assert body["model"] == "gpt-responses"
+        assert_valid_connectivity_prompt(body["input"])
+        assert body["max_output_tokens"] == 8
+        assert body["store"] is False
         return httpx.Response(200, json={"output_text": "42"})
 
     result = await run_connectivity_test(
@@ -153,7 +190,7 @@ async def test_codex_profile_builds_responses_request() -> None:
         assert body["instructions"] == "You are Codex, a coding agent based on GPT-5. Reply briefly."
         assert body["input"][0]["role"] == "developer"
         assert body["input"][0]["content"][0]["text"] == "This is a connectivity check. Do not call tools."
-        assert body["input"][1]["content"][0]["text"] == CONNECTIVITY_CHECK_PROMPT
+        assert_valid_connectivity_prompt(body["input"][1]["content"][0]["text"])
         assert body["tools"] == []
         assert body["tool_choice"] == "auto"
         assert body["parallel_tool_calls"] is True
@@ -217,7 +254,8 @@ async def test_claude_code_profile_builds_messages_request() -> None:
         assert request.headers["anthropic-dangerous-direct-browser-access"] == "true"
         body = json.loads(request.content)
         assert body["model"] == "claude-test"
-        assert body["messages"] == [{"role": "user", "content": CONNECTIVITY_CHECK_PROMPT}]
+        assert body["messages"][0]["role"] == "user"
+        assert_valid_connectivity_prompt(body["messages"][0]["content"])
         assert body["system"] == [{"type": "text", "text": CLAUDE_CODE_SYSTEM_PROMPT}]
         assert re.fullmatch(
             r"user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9a-f-]{36}",
