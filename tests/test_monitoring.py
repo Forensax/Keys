@@ -102,13 +102,53 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     page = client.get("/monitoring")
     assert page.status_code == 200
     assert "监控" in page.text
-    assert "Telegram 通知" in page.text
-    assert "新建监控任务" in page.text
-    assert "/monitoring/tasks" in page.text
-    assert 'name="retry_attempts"' in page.text
-    assert 'name="retry_interval_seconds"' in page.text
-    assert 'name="notify_on_recovery"' in page.text
-    assert 'name="notify_on_failure"' in page.text
+    assert '<a class="button" href="/monitoring?panel=vault">锁定后台密钥</a>' in page.text
+    assert '<a class="button" href="/monitoring?panel=telegram">TG通知设置</a>' in page.text
+    assert '<a class="button primary" href="/monitoring?panel=new_task">新建监控任务</a>' in page.text
+    assert "监控任务" in page.text
+    assert "最近检测" in page.text
+    assert "保存通知配置" not in page.text
+    assert 'name="retry_attempts"' not in page.text
+    assert 'name="retry_interval_seconds"' not in page.text
+    assert 'name="notify_on_recovery"' not in page.text
+    assert 'name="notify_on_failure"' not in page.text
+
+    failed_authorize = client.post(
+        "/monitoring/authorize",
+        data={"password": "wrong-password"},
+        follow_redirects=False,
+    )
+    assert failed_authorize.status_code == 303
+    assert failed_authorize.headers["location"] == "/monitoring?panel=vault"
+    locked = client.post("/monitoring/lock", follow_redirects=False)
+    assert locked.status_code == 303
+    assert locked.headers["location"] == "/monitoring?panel=vault"
+
+    vault_panel = client.get("/monitoring?panel=vault")
+    assert vault_panel.status_code == 200
+    assert "后台密钥" in vault_panel.text
+    assert "返回任务列表" in vault_panel.text
+    assert "保存通知配置" not in vault_panel.text
+    assert 'name="retry_attempts"' not in vault_panel.text
+
+    telegram_panel = client.get("/monitoring?panel=telegram")
+    assert telegram_panel.status_code == 200
+    assert "Telegram 通知" in telegram_panel.text
+    assert "保存通知配置" in telegram_panel.text
+    assert "返回任务列表" in telegram_panel.text
+    assert "后台密钥可用" not in telegram_panel.text
+    assert 'name="retry_attempts"' not in telegram_panel.text
+
+    new_task_panel = client.get("/monitoring?panel=new_task")
+    assert new_task_panel.status_code == 200
+    assert "新建监控任务" in new_task_panel.text
+    assert "/monitoring/tasks" in new_task_panel.text
+    assert "返回任务列表" in new_task_panel.text
+    assert 'name="retry_attempts"' in new_task_panel.text
+    assert 'name="retry_interval_seconds"' in new_task_panel.text
+    assert 'name="notify_on_recovery"' in new_task_panel.text
+    assert 'name="notify_on_failure"' in new_task_panel.text
+    assert "保存通知配置" not in new_task_panel.text
 
     no_notification_type = client.post(
         "/monitoring/tasks",
@@ -127,6 +167,8 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     )
     assert no_notification_type.status_code == 400
     assert "请至少选择一种通知类型" in no_notification_type.text
+    assert 'name="retry_attempts"' in no_notification_type.text
+    assert "保存通知配置" not in no_notification_type.text
 
     invalid_retry = client.post(
         "/monitoring/tasks",
@@ -848,6 +890,7 @@ def test_telegram_config_is_encrypted_and_test_message_uses_proxy(monkeypatch) -
         follow_redirects=False,
     )
     assert saved.status_code == 303
+    assert saved.headers["location"] == "/monitoring?panel=telegram"
     with SessionLocal() as db:
         encrypted_token = get_setting(db, "telegram_bot_token_encrypted")
         assert encrypted_token
@@ -861,6 +904,7 @@ def test_telegram_config_is_encrypted_and_test_message_uses_proxy(monkeypatch) -
     monkeypatch.setattr(notifications_module, "post_telegram_message", fake_post_telegram_message)
     tested = client.post("/monitoring/telegram/test", follow_redirects=False)
     assert tested.status_code == 303
+    assert tested.headers["location"] == "/monitoring?panel=telegram"
     assert telegram_calls == [
         {
             "bot_token": "123:token",
@@ -869,7 +913,7 @@ def test_telegram_config_is_encrypted_and_test_message_uses_proxy(monkeypatch) -
             "proxy_url": "socks5h://u:p@proxy.example:1080",
         }
     ]
-    page = client.get("/monitoring")
+    page = client.get("/monitoring?panel=telegram")
     assert "123:token" not in page.text
     assert "已保存，留空则不修改" in page.text
     client.close()

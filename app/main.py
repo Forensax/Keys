@@ -1844,9 +1844,12 @@ def build_monitoring_timelines(
 def monitoring_page_context(
     db: Session,
     *,
+    active_panel: str | None = None,
     form_values: dict[str, Any] | None = None,
     errors: list[str] | None = None,
 ) -> dict[str, Any]:
+    if active_panel not in {"vault", "telegram", "new_task"}:
+        active_panel = ""
     tasks = list(
         db.scalars(
             select(MonitoringTask)
@@ -1869,6 +1872,7 @@ def monitoring_page_context(
         "telegram_config": read_telegram_config(db),
         "vault_state": scheduler_vault_state(),
         "task_is_running": monitoring_task_is_running,
+        "active_panel": active_panel,
         "form_values": form_values or {},
         "errors": errors or [],
         "client_profile_labels": CLIENT_PROFILE_LABELS,
@@ -2006,9 +2010,10 @@ def apply_monitoring_task_values(
 def monitoring_page(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
+    panel: Annotated[str | None, Query()] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
-    return render(request, "monitoring.html", monitoring_page_context(db))
+    return render(request, "monitoring.html", monitoring_page_context(db, active_panel=panel))
 
 
 @app.post("/monitoring/authorize")
@@ -2020,15 +2025,15 @@ def monitoring_authorize(
 ) -> Response:
     if not settings.session_secret_configured:
         flash(request, "必须在 .env 中显式设置稳定的 SESSION_SECRET 后才能启用后台任务。", "error")
-        return redirect("/monitoring")
+        return redirect("/monitoring?panel=vault")
     if not password or not authenticate(db, password) or not check_session_password_proof(request, db, password):
         flash(request, "密码确认失败，后台密钥未授权。", "error")
-        return redirect("/monitoring")
+        return redirect("/monitoring?panel=vault")
     authorize_scheduler_vault(db, password, settings.session_secret)
     prepare_enabled_background_tasks(db)
     db.commit()
     flash(request, "后台密钥已授权，监控任务可在应用重启后继续运行。")
-    return redirect("/monitoring")
+    return redirect("/monitoring?panel=vault")
 
 
 @app.post("/monitoring/lock")
@@ -2041,7 +2046,7 @@ def monitoring_lock(
     disable_background_tasks(db)
     db.commit()
     flash(request, "后台密钥已锁定，所有后台任务已停用。")
-    return redirect("/monitoring")
+    return redirect("/monitoring?panel=vault")
 
 
 @app.post("/monitoring/telegram")
@@ -2065,10 +2070,10 @@ def monitoring_telegram_save(
             proxy = None
         if proxy is None:
             flash(request, "Telegram 代理不存在。", "error")
-            return redirect("/monitoring")
+            return redirect("/monitoring?panel=telegram")
         if not proxy.enabled:
             flash(request, "不能选择已禁用的 Telegram 代理。", "error")
-            return redirect("/monitoring")
+            return redirect("/monitoring?panel=telegram")
     if clean_token:
         set_setting(db, SETTING_TELEGRAM_BOT_TOKEN, encrypt_secret_with_fernet(clean_token, fernet))
     if clean_chat_id:
@@ -2080,12 +2085,12 @@ def monitoring_telegram_save(
     )
     if should_enable and not has_credentials:
         flash(request, "启用 Telegram 前请先填写 Bot Token 和 Chat ID。", "error")
-        return redirect("/monitoring")
+        return redirect("/monitoring?panel=telegram")
     set_setting(db, SETTING_TELEGRAM_ENABLED, "true" if should_enable else "false")
     set_setting(db, SETTING_TELEGRAM_PROXY_ID, clean_proxy_id)
     db.commit()
     flash(request, "Telegram 通知配置已保存。")
-    return redirect("/monitoring")
+    return redirect("/monitoring?panel=telegram")
 
 
 @app.post("/monitoring/telegram/test")
@@ -2098,9 +2103,9 @@ async def monitoring_telegram_test(
         await send_test_telegram_message(db, require_session_fernet(request))
     except Exception as exc:
         flash(request, f"测试消息发送失败：{sanitize_proxy_error(exc)}", "error")
-        return redirect("/monitoring")
+        return redirect("/monitoring?panel=telegram")
     flash(request, "Telegram 测试消息已发送。")
-    return redirect("/monitoring")
+    return redirect("/monitoring?panel=telegram")
 
 
 @app.post("/monitoring/tasks")
@@ -2142,7 +2147,12 @@ def monitoring_task_create(
         return render(
             request,
             "monitoring.html",
-            monitoring_page_context(db, form_values={**values, "enabled": should_enable}, errors=errors),
+            monitoring_page_context(
+                db,
+                active_panel="new_task",
+                form_values={**values, "enabled": should_enable},
+                errors=errors,
+            ),
             400,
         )
     task = MonitoringTask()
