@@ -1030,15 +1030,15 @@ tr:last-child td {
 }
 
 .schedule-table th:nth-child(1) {
-  width: 15%;
+  width: 13%;
 }
 
 .schedule-table th:nth-child(2) {
-  width: 15%;
+  width: 13%;
 }
 
 .schedule-table th:nth-child(3) {
-  width: 12%;
+  width: 11%;
 }
 
 .schedule-table th:nth-child(4) {
@@ -1046,15 +1046,15 @@ tr:last-child td {
 }
 
 .schedule-table th:nth-child(5) {
-  width: 14%;
+  width: 18%;
 }
 
 .schedule-table th:nth-child(6) {
-  width: 13%;
+  width: 12%;
 }
 
 .schedule-table th:nth-child(7) {
-  width: 23%;
+  width: 25%;
 }
 
 .schedule-table th,
@@ -1065,10 +1065,14 @@ tr:last-child td {
 .schedule-table td:nth-child(1),
 .schedule-table td:nth-child(2),
 .schedule-table td:nth-child(3),
-.schedule-table td:nth-child(5),
 .schedule-table td:nth-child(6) {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-table .schedule-next-run {
+  overflow: visible;
   white-space: nowrap;
 }
 

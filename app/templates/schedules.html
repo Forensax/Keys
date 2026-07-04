@@ -101,7 +101,7 @@
               <td>{{ task_target_summary(task) }}</td>
               <td>{{ task_schedule_summary(task) }}</td>
               <td><span class="status {{ 'success' if task.enabled else 'disabled' }}">{{ "运行中" if task_is_running(task.id) else ("启用" if task.enabled else "停用") }}</span></td>
-              <td>{{ format_local_datetime(task.next_run_at) }}</td>
+              <td class="schedule-next-run">{{ format_local_datetime(task.next_run_at) }}</td>
               <td>
                 {% if latest %}<span class="status {{ latest.status }}">{{ latest.status }}</span> <span class="muted small">{{ latest.success_count }}/{{ latest.total_count }} 成功</span>{% else %}<span class="muted">尚未运行</span>{% endif %}
               </td>

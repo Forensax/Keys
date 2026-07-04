@@ -303,6 +303,9 @@ def test_schedules_page_uses_collapsed_panels_and_compact_task_table() -> None:
     assert "compact task" in task_table
     assert "全部已启用中转站" in task_table
     assert "每 60 分钟" in task_table
+    assert "下次运行" in task_table
+    assert "最近结果" in task_table
+    assert 'class="schedule-next-run"' in task_table
     assert "立即运行" in task_table
     assert "启用" in task_table
     assert "编辑" in task_table
@@ -312,6 +315,8 @@ def test_schedules_page_uses_collapsed_panels_and_compact_task_table() -> None:
     assert ".schedule-table,\n.schedule-run-table" not in styles
     assert ".schedule-table {\n  min-width: 0;" in styles
     assert ".schedule-run-table,\n.monitoring-check-table" in styles
+    assert ".schedule-table th:nth-child(5) {\n  width: 18%;" in styles
+    assert ".schedule-table .schedule-next-run {\n  overflow: visible;\n  white-space: nowrap;" in styles
     assert ".schedule-task-panel {\n  margin-bottom: 12px;" in styles
     assert ".schedule-recent-panel {\n  margin-top: 0;" in styles
     assert ".schedule-table .schedule-actions button.small,\n.schedule-table .schedule-actions .button.small" in styles
