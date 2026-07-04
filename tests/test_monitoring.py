@@ -64,6 +64,13 @@ def monitoring_fernet():
         return fernet
 
 
+def assert_monitoring_panel_close_button(page_text: str) -> None:
+    assert 'class="panel-close"' in page_text
+    assert 'href="/monitoring"' in page_text
+    assert 'aria-label="关闭并返回任务列表"' in page_text
+    assert ">返回任务列表<" not in page_text
+
+
 def test_monitoring_tables_are_created_and_migration_is_repeatable(tmp_path) -> None:
     legacy = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
     Base.metadata.create_all(bind=legacy)
@@ -127,7 +134,7 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     vault_panel = client.get("/monitoring?panel=vault")
     assert vault_panel.status_code == 200
     assert "后台密钥" in vault_panel.text
-    assert "返回任务列表" in vault_panel.text
+    assert_monitoring_panel_close_button(vault_panel.text)
     assert "保存通知配置" not in vault_panel.text
     assert 'name="retry_attempts"' not in vault_panel.text
 
@@ -135,7 +142,7 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert telegram_panel.status_code == 200
     assert "Telegram 通知" in telegram_panel.text
     assert "保存通知配置" in telegram_panel.text
-    assert "返回任务列表" in telegram_panel.text
+    assert_monitoring_panel_close_button(telegram_panel.text)
     assert "后台密钥可用" not in telegram_panel.text
     assert 'name="retry_attempts"' not in telegram_panel.text
 
@@ -143,7 +150,7 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert new_task_panel.status_code == 200
     assert "新建监控任务" in new_task_panel.text
     assert "/monitoring/tasks" in new_task_panel.text
-    assert "返回任务列表" in new_task_panel.text
+    assert_monitoring_panel_close_button(new_task_panel.text)
     assert 'name="retry_attempts"' in new_task_panel.text
     assert 'name="retry_interval_seconds"' in new_task_panel.text
     assert 'name="notify_on_recovery"' in new_task_panel.text
@@ -268,6 +275,8 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert ".monitoring-timeline-segment.is-neutral" not in styles
     assert ".monitoring-task-error" in styles
     assert ".monitoring-check-error" in styles
+    assert ".dismissible-panel {\n  position: relative;" in styles
+    assert ".panel-close" in styles
     assert "white-space: nowrap;" in styles
     assert ".monitoring-check-table" in styles and "min-width: 1040px" in styles
 

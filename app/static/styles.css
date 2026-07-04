@@ -146,6 +146,33 @@ h2 {
   padding: 18px;
 }
 
+.dismissible-panel {
+  position: relative;
+}
+
+.panel-close {
+  align-items: center;
+  border-radius: 999px;
+  color: #7a8494;
+  display: inline-flex;
+  font-size: 20px;
+  font-weight: 600;
+  height: 28px;
+  justify-content: center;
+  line-height: 1;
+  position: absolute;
+  right: 12px;
+  text-decoration: none;
+  top: 12px;
+  width: 28px;
+}
+
+.panel-close:hover {
+  background: #eef1f5;
+  color: #485264;
+  text-decoration: none;
+}
+
 .flash,
 .form-error {
   border-radius: 8px;

@@ -17,17 +17,18 @@
 
 {% if active_panel == "vault" %}
 {% if vault_state == "ready" %}
-  <div class="panel scheduler-vault success-panel">
+  <div class="panel scheduler-vault success-panel dismissible-panel">
+    <a class="panel-close" href="/monitoring" aria-label="关闭并返回任务列表" title="关闭">×</a>
     <div><strong>后台密钥可用</strong><p class="muted small">监控任务可在应用重启后继续运行。</p></div>
     <div class="button-row">
-      <a class="button" href="/monitoring">返回任务列表</a>
       <form method="post" action="/monitoring/lock" onsubmit="return confirm('锁定后台密钥会停用全部后台任务，确定继续吗？');">
         <button type="submit">锁定后台密钥</button>
       </form>
     </div>
   </div>
 {% else %}
-  <div class="panel scheduler-vault warning-panel">
+  <div class="panel scheduler-vault warning-panel dismissible-panel">
+    <a class="panel-close" href="/monitoring" aria-label="关闭并返回任务列表" title="关闭">×</a>
     <div>
       <strong>{{ "SESSION_SECRET 未显式配置" if vault_state == "unconfigured" else ("后台密钥已失效" if vault_state == "locked" else "后台密钥尚未授权") }}</strong>
       <p class="muted small">
@@ -40,13 +41,13 @@
         <button class="primary" type="submit">授权后台任务</button>
       </form>
     {% endif %}
-    <a class="button" href="/monitoring">返回任务列表</a>
   </div>
 {% endif %}
 {% endif %}
 
 {% if active_panel == "telegram" %}
-<section class="panel schedule-create-panel">
+<section class="panel schedule-create-panel dismissible-panel">
+  <a class="panel-close" href="/monitoring" aria-label="关闭并返回任务列表" title="关闭">×</a>
   <h2>Telegram 通知</h2>
   <form method="post" action="/monitoring/telegram" class="form-grid">
     <label>Bot Token
@@ -65,7 +66,6 @@
     </label>
     <label class="checkbox-row"><input type="checkbox" name="enabled" {% if telegram_config.enabled %}checked{% endif %}>启用 Telegram 通知</label>
     <div class="form-actions full-span">
-      <a class="button" href="/monitoring">返回任务列表</a>
       <button class="primary" type="submit">保存通知配置</button>
     </div>
   </form>
@@ -78,7 +78,8 @@
 {% endif %}
 
 {% if active_panel == "new_task" %}
-<section class="panel schedule-create-panel">
+<section class="panel schedule-create-panel dismissible-panel">
+  <a class="panel-close" href="/monitoring" aria-label="关闭并返回任务列表" title="关闭">×</a>
   <h2>新建监控任务</h2>
   {% if errors %}
     <div class="flash error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>
@@ -126,7 +127,7 @@
       <label class="checkbox-row"><input type="checkbox" name="notify_on_failure" {% if selected_notify_failure %}checked{% endif %}>变为不可用时通知</label>
     </div>
     <label class="checkbox-row"><input type="checkbox" name="enabled" {% if form_values.get('enabled') %}checked{% endif %}>创建后立即启用</label>
-    <div class="form-actions full-span"><a class="button" href="/monitoring">返回任务列表</a><button class="primary" type="submit">创建监控任务</button></div>
+    <div class="form-actions full-span"><button class="primary" type="submit">创建监控任务</button></div>
   </form>
 </section>
 {% endif %}
