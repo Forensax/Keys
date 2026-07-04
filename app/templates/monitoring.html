@@ -132,7 +132,7 @@
 </section>
 {% endif %}
 
-<section class="panel">
+<section class="panel monitoring-task-panel">
   <div class="panel-head"><div><h2>监控任务</h2><p class="muted">共 {{ tasks|length }} 个任务</p></div></div>
   {% if tasks %}
     <div class="table-wrap">
@@ -148,7 +148,7 @@
               </td>
               <td class="mono">{{ task.model_id }}</td>
               <td class="monitoring-period-cell">
-                <span>每 {{ task.interval_minutes }} 分钟 · 最多 {{ task.retry_attempts }} 次</span>
+                <span>每 {{ task.interval_minutes }} 分钟 · 重试 {{ task.retry_attempts }} 次</span>
                 <span class="muted small">{% if task.notify_on_recovery and task.notify_on_failure %}恢复/不可用{% elif task.notify_on_failure %}不可用{% else %}恢复{% endif %}</span>
               </td>
               <td>
@@ -196,7 +196,7 @@
   {% endif %}
 </section>
 
-<section class="panel">
+<section class="panel monitoring-recent-panel">
   <h2>最近检测</h2>
   {% if recent_checks %}
     <div class="table-wrap"><table class="monitoring-check-table">

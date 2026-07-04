@@ -250,7 +250,7 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert "Relay" in task_table
     assert "gpt-watch" in task_table
     assert "monitoring-period-cell" in task_table
-    assert "每 5 分钟 · 最多 1 次" in task_table
+    assert "每 5 分钟 · 重试 1 次" in task_table
     assert "monitoring-timeline-row" in task_table
     assert "过去 24 小时" in task_table
     assert "暂无可用率 · 故障 0 次" in task_table
@@ -261,11 +261,17 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert "停用" in task_table
     assert "编辑" in task_table
     assert "删除" in task_table
+    assert '<section class="panel monitoring-task-panel">' in task_page.text
+    assert '<section class="panel monitoring-recent-panel">' in task_page.text
 
     styles = Path("app/static/styles.css").read_text(encoding="utf-8")
     assert ".monitoring-table,\n.monitoring-check-table" not in styles
     assert ".monitoring-table {\n  min-width: 0;" in styles
+    assert ".monitoring-task-panel {\n  margin-bottom: 12px;" in styles
+    assert ".monitoring-recent-panel {\n  margin-top: 0;" in styles
     assert ".monitoring-table .schedule-actions {\n  flex-wrap: nowrap;" in styles
+    assert ".monitoring-table .schedule-actions button.small,\n.monitoring-table .schedule-actions .button.small" in styles
+    assert "line-height: 1.2;" in styles
     assert ".monitoring-period-cell span {\n  display: block;" in styles
     assert ".monitoring-timeline-track" in styles
     assert ".monitoring-timeline-plot" in styles
