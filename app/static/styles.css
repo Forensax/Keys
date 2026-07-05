@@ -1110,6 +1110,79 @@ tr:last-child td {
   padding: 4px 7px;
 }
 
+.notification-channel-table {
+  min-width: 0;
+}
+
+.notification-channel-table th:nth-child(1) {
+  width: 20%;
+}
+
+.notification-channel-table th:nth-child(2) {
+  width: 17%;
+}
+
+.notification-channel-table th:nth-child(3) {
+  width: 8%;
+}
+
+.notification-channel-table th:nth-child(4) {
+  width: 13%;
+}
+
+.notification-channel-table th:nth-child(5) {
+  width: 8%;
+}
+
+.notification-channel-table th:nth-child(6) {
+  width: 34%;
+}
+
+.notification-channel-table th,
+.notification-channel-table td {
+  padding: 9px 10px;
+}
+
+.notification-channel-table td:nth-child(1),
+.notification-channel-table td:nth-child(2),
+.notification-channel-table td:nth-child(4) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-channel-table td:nth-child(1) strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notification-channel-table .action-cell {
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.notification-channel-table .schedule-actions {
+  flex-wrap: nowrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.notification-channel-table .schedule-actions form {
+  display: inline-flex;
+}
+
+.notification-channel-table .schedule-actions button.small,
+.notification-channel-table .schedule-actions .button.small {
+  border-radius: 6px;
+  box-sizing: border-box;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+  min-height: 30px;
+  padding: 4px 7px;
+}
+
 .monitoring-table {
   min-width: 0;
 }

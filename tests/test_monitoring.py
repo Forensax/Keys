@@ -435,10 +435,28 @@ def test_notification_channel_page_creates_and_tests_tg_and_feishu_channels(monk
     assert 'data-channel-type-fields="telegram"' in invalid.text
 
     rendered = client.get("/notification-channels")
+    assert '<table class="notification-channel-table">' in rendered.text
+    assert "TG 主群" in rendered.text
+    assert "Telegram" in rendered.text
+    assert "启用" in rendered.text
+    assert "直连" in rendered.text
+    assert "已配置" in rendered.text
+    assert "测试" in rendered.text
+    assert "停用" in rendered.text
+    assert "编辑" in rendered.text
+    assert "删除" in rendered.text
     assert "123:token" not in rendered.text
     assert "hook-token" not in rendered.text
     assert "app-secret" not in rendered.text
     assert 'data-notification-channel-form' not in rendered.text
+    styles = Path("app/static/styles.css").read_text(encoding="utf-8")
+    assert ".notification-channel-table {\n  min-width: 0;" in styles
+    assert ".notification-channel-table .schedule-actions {\n  flex-wrap: nowrap;" in styles
+    assert (
+        ".notification-channel-table .schedule-actions button.small,\n"
+        ".notification-channel-table .schedule-actions .button.small"
+    ) in styles
+    assert ".schedule-run-table,\n.monitoring-check-table {\n  min-width: 1040px;" in styles
     client.close()
 
 

@@ -87,7 +87,7 @@
 <section class="panel">
   <div class="panel-head"><div><h2>渠道列表</h2><p class="muted">共 {{ channels|length }} 个渠道</p></div></div>
   {% if channels %}
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table class="notification-channel-table">
       <thead><tr><th>名称</th><th>类型</th><th>状态</th><th>代理</th><th>凭据</th><th></th></tr></thead>
       <tbody>{% for channel in channels %}<tr>
         <td><strong>{{ channel.name }}</strong></td>
