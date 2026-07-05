@@ -8,10 +8,15 @@
     <h1>通知渠道</h1>
     <p class="muted">集中配置 Telegram 和飞书通知渠道，监控任务可选择一个或多个渠道。</p>
   </div>
-  <a class="button" href="/monitoring">返回监控</a>
+  <div class="button-row">
+    <a class="button" href="/monitoring">返回监控</a>
+    <a class="button primary" href="/notification-channels?panel=new_channel">新建通知渠道</a>
+  </div>
 </section>
 
-<section class="panel schedule-create-panel">
+{% if active_panel == "new_channel" or editing_channel %}
+<section class="panel schedule-create-panel dismissible-panel">
+  <a class="panel-close" href="/notification-channels" aria-label="关闭并返回渠道列表" title="关闭">×</a>
   <h2>{{ "编辑通知渠道" if editing_channel else "新建通知渠道" }}</h2>
   {% if errors %}
     <div class="flash error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>
@@ -19,10 +24,10 @@
   {% set values = form_values %}
   {% set selected_type = values.get('channel_type', editing_channel.channel_type if editing_channel else 'telegram') %}
   {% set selected_proxy = values.get('proxy_id', editing_channel.proxy_id if editing_channel else '') %}
-  <form method="post" action="{{ '/notification-channels/' ~ editing_channel.id if editing_channel else '/notification-channels' }}" class="form-grid">
+  <form method="post" action="{{ '/notification-channels/' ~ editing_channel.id if editing_channel else '/notification-channels' }}" class="form-grid" data-notification-channel-form>
     <label>渠道名称<input name="name" maxlength="160" required value="{{ values.get('name', editing_channel.name if editing_channel else '') }}" placeholder="例如：值班群"></label>
     <label>渠道类型
-      <select name="channel_type" required>
+      <select name="channel_type" required data-notification-channel-type>
         {% for type_value, label in channel_type_labels.items() %}
           <option value="{{ type_value }}" {% if selected_type == type_value %}selected{% endif %}>{{ label }}</option>
         {% endfor %}
@@ -38,7 +43,7 @@
     </label>
     <label class="checkbox-row"><input type="checkbox" name="enabled" {% if values.get('enabled', editing_channel.enabled if editing_channel else true) %}checked{% endif %}>启用渠道</label>
 
-    <div class="wide notification-channel-fields">
+    <div class="wide notification-channel-fields" data-channel-type-fields="telegram" {% if selected_type != 'telegram' %}hidden{% endif %}>
       <span class="form-label">Telegram</span>
       <div class="form-grid">
         <label>Bot Token<input name="bot_token" value="{{ values.get('bot_token', '') }}" placeholder="{{ '已保存，留空则不修改' if editing_channel and selected_type == 'telegram' and channel_has_credentials(editing_channel) else '1234567890:ABC...' }}" autocomplete="off"></label>
@@ -46,7 +51,7 @@
       </div>
     </div>
 
-    <div class="wide notification-channel-fields">
+    <div class="wide notification-channel-fields" data-channel-type-fields="feishu_webhook" {% if selected_type != 'feishu_webhook' %}hidden{% endif %}>
       <span class="form-label">飞书自定义机器人</span>
       <div class="form-grid">
         <label>Webhook URL<input name="webhook_url" value="{{ values.get('webhook_url', '') }}" placeholder="{{ '已保存，留空则不修改' if editing_channel and selected_type == 'feishu_webhook' and channel_has_credentials(editing_channel) else 'https://open.feishu.cn/open-apis/bot/v2/hook/...' }}" autocomplete="off"></label>
@@ -55,7 +60,7 @@
       </div>
     </div>
 
-    <div class="wide notification-channel-fields">
+    <div class="wide notification-channel-fields" data-channel-type-fields="feishu_app" {% if selected_type != 'feishu_app' %}hidden{% endif %}>
       <span class="form-label">飞书应用机器人</span>
       <div class="form-grid">
         <label>App ID<input name="app_id" value="{{ values.get('app_id', '') }}" placeholder="{{ '已保存，留空则不修改' if editing_channel and selected_type == 'feishu_app' and channel_has_credentials(editing_channel) else 'cli_xxx' }}" autocomplete="off"></label>
@@ -77,6 +82,7 @@
     </div>
   </form>
 </section>
+{% endif %}
 
 <section class="panel">
   <div class="panel-head"><div><h2>渠道列表</h2><p class="muted">共 {{ channels|length }} 个渠道</p></div></div>

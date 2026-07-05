@@ -2294,12 +2294,16 @@ def notification_channel_or_404(db: Session, channel_id: int) -> NotificationCha
 def notification_channels_context(
     db: Session,
     *,
+    active_panel: str | None = None,
     form_values: dict[str, Any] | None = None,
     errors: list[str] | None = None,
     editing_channel: NotificationChannel | None = None,
 ) -> dict[str, Any]:
+    if active_panel != "new_channel":
+        active_panel = ""
     return {
         "channels": all_notification_channels(db),
+        "active_panel": active_panel,
         "editing_channel": editing_channel,
         "form_values": form_values or {},
         "errors": errors or [],
@@ -2333,11 +2337,12 @@ def serialize_notification_channel(
 def notification_channels_page(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
+    panel: Annotated[str | None, Query()] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     migrate_legacy_telegram_channel(db, require_session_fernet(request))
     db.commit()
-    return render(request, "notification_channels.html", notification_channels_context(db))
+    return render(request, "notification_channels.html", notification_channels_context(db, active_panel=panel))
 
 
 @app.post("/notification-channels")
@@ -2377,7 +2382,12 @@ def notification_channel_create(
     )
     errors = validate_notification_channel_values(db, values)
     if errors:
-        return render(request, "notification_channels.html", notification_channels_context(db, form_values=values, errors=errors), 400)
+        return render(
+            request,
+            "notification_channels.html",
+            notification_channels_context(db, active_panel="new_channel", form_values=values, errors=errors),
+            400,
+        )
     channel = NotificationChannel()
     apply_notification_channel_values(channel, values, fernet)
     db.add(channel)

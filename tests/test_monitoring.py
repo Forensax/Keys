@@ -337,9 +337,25 @@ def test_notification_channel_page_creates_and_tests_tg_and_feishu_channels(monk
     page = client.get("/notification-channels")
     assert page.status_code == 200
     assert "通知渠道" in page.text
-    assert "Telegram" in page.text
-    assert "飞书自定义机器人" in page.text
-    assert "飞书应用机器人" in page.text
+    assert '<a class="button primary" href="/notification-channels?panel=new_channel">新建通知渠道</a>' in page.text
+    assert 'data-notification-channel-form' not in page.text
+    assert "创建渠道" not in page.text
+    assert "Bot Token" not in page.text
+
+    new_panel = client.get("/notification-channels?panel=new_channel")
+    assert new_panel.status_code == 200
+    assert "新建通知渠道" in new_panel.text
+    assert 'class="panel-close"' in new_panel.text
+    assert 'href="/notification-channels"' in new_panel.text
+    assert 'data-notification-channel-form' in new_panel.text
+    assert 'data-notification-channel-type' in new_panel.text
+    assert 'data-channel-type-fields="telegram"' in new_panel.text
+    assert 'data-channel-type-fields="feishu_webhook" hidden' in new_panel.text
+    assert 'data-channel-type-fields="feishu_app" hidden' in new_panel.text
+    scripts = Path("app/static/app.js").read_text(encoding="utf-8")
+    assert "[data-notification-channel-form]" in scripts
+    assert "[data-channel-type-fields]" in scripts
+    assert "group.hidden = group.dataset.channelTypeFields !== typeSelect.value" in scripts
 
     telegram_id = create_telegram_channel(client)
     webhook = client.post(
@@ -397,10 +413,31 @@ def test_notification_channel_page_creates_and_tests_tg_and_feishu_channels(monk
         ("飞书应用机器人", "feishu_app"),
     ]
 
+    telegram_edit = client.get(f"/notification-channels/{telegram_id}/edit")
+    assert 'data-channel-type-fields="telegram"' in telegram_edit.text
+    assert 'data-channel-type-fields="feishu_webhook" hidden' in telegram_edit.text
+    webhook_edit = client.get(f"/notification-channels/{webhook_id}/edit")
+    assert 'data-channel-type-fields="telegram" hidden' in webhook_edit.text
+    assert 'data-channel-type-fields="feishu_webhook"' in webhook_edit.text
+    app_edit = client.get(f"/notification-channels/{app_id}/edit")
+    assert 'data-channel-type-fields="feishu_app"' in app_edit.text
+    assert 'data-channel-type-fields="feishu_webhook" hidden' in app_edit.text
+
+    invalid = client.post(
+        "/notification-channels",
+        data={"name": "broken tg", "channel_type": "telegram", "enabled": "on"},
+        follow_redirects=False,
+    )
+    assert invalid.status_code == 400
+    assert "Telegram 渠道需要 Bot Token 和 Chat ID" in invalid.text
+    assert 'data-notification-channel-form' in invalid.text
+    assert 'data-channel-type-fields="telegram"' in invalid.text
+
     rendered = client.get("/notification-channels")
     assert "123:token" not in rendered.text
     assert "hook-token" not in rendered.text
     assert "app-secret" not in rendered.text
+    assert 'data-notification-channel-form' not in rendered.text
     client.close()
 
 

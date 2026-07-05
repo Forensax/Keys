@@ -339,6 +339,21 @@
     manualModelCancel.addEventListener("click", () => setManualModelFormOpen(false));
   }
 
+  document.querySelectorAll("[data-notification-channel-form]").forEach((form) => {
+    const typeSelect = form.querySelector("[data-notification-channel-type]");
+    const fieldGroups = Array.from(form.querySelectorAll("[data-channel-type-fields]"));
+    if (!typeSelect || !fieldGroups.length) {
+      return;
+    }
+    const syncChannelTypeFields = () => {
+      fieldGroups.forEach((group) => {
+        group.hidden = group.dataset.channelTypeFields !== typeSelect.value;
+      });
+    };
+    typeSelect.addEventListener("change", syncChannelTypeFields);
+    syncChannelTypeFields();
+  });
+
   const preferenceForm = document.querySelector("[data-test-preferences]");
   if (preferenceForm) {
     const providerId = preferenceForm.dataset.providerId;
