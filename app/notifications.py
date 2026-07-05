@@ -12,7 +12,7 @@ import httpx
 from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
 
-from .models import MonitoringCheck, MonitoringTask, NetworkProxy, NotificationChannel
+from .models import MonitoringCheck, MonitoringTask, NetworkProxy, NotificationChannel, utc_now
 from .proxy_support import build_proxy_url, sanitize_proxy_error
 from .security import decrypt_secret_with_fernet, encrypt_secret_with_fernet, get_setting, set_setting
 
@@ -223,7 +223,9 @@ def telegram_api_error_message(response: httpx.Response) -> str:
     return f"Telegram API HTTP {response.status_code}: {detail}"
 
 
-def format_telegram_time(value: datetime) -> str:
+def format_telegram_time(value: datetime | None) -> str:
+    if value is None:
+        return "未知"
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -464,6 +466,7 @@ async def send_test_notification_channel(db: Session, channel: NotificationChann
         client_profile="test",
         network_route="test",
         status="success",
+        checked_at=utc_now(),
     )
     task = MonitoringTask(
         name="通知渠道测试",

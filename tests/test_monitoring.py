@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, select
 
@@ -439,6 +440,47 @@ def test_notification_channel_page_creates_and_tests_tg_and_feishu_channels(monk
     assert "app-secret" not in rendered.text
     assert 'data-notification-channel-form' not in rendered.text
     client.close()
+
+
+def test_send_test_notification_channel_sets_checked_time(monkeypatch) -> None:
+    fernet = Fernet(Fernet.generate_key())
+    captured: dict[str, str | None] = {}
+    with SessionLocal() as db:
+        channel = NotificationChannel(
+            name="TG 测试",
+            channel_type="telegram",
+            enabled=True,
+            config_json="{}",
+            encrypted_secret_json=encrypt_secret_with_fernet(
+                json.dumps({"bot_token": "123:token", "chat_id": "-100"}),
+                fernet,
+            ),
+        )
+        db.add(channel)
+        db.commit()
+        channel_id = channel.id
+
+    async def fake_post_telegram_message(*, bot_token: str, chat_id: str, text: str, proxy_url: str | None = None):
+        captured["bot_token"] = bot_token
+        captured["chat_id"] = chat_id
+        captured["text"] = text
+        captured["proxy_url"] = proxy_url
+
+    monkeypatch.setattr(notifications_module, "post_telegram_message", fake_post_telegram_message)
+
+    with SessionLocal() as db:
+        channel = db.get(NotificationChannel, channel_id)
+        assert channel is not None
+        asyncio.run(notifications_module.send_test_notification_channel(db, channel, fernet))
+
+    assert captured["bot_token"] == "123:token"
+    assert captured["chat_id"] == "-100"
+    assert captured["proxy_url"] is None
+    assert captured["text"] is not None
+    assert "时间：" in captured["text"]
+    time_line = next(line for line in captured["text"].splitlines() if line.startswith("时间："))
+    assert "None" not in time_line
+    assert time_line != "时间：未知"
 
 
 def test_monitoring_page_renders_24_hour_status_timeline() -> None:
