@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block title %}通知渠道 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>通知渠道</h1>
+    <p class="muted">集中配置 Telegram 和飞书通知渠道，监控任务可选择一个或多个渠道。</p>
+  </div>
+  <a class="button" href="/monitoring">返回监控</a>
+</section>
+
+<section class="panel schedule-create-panel">
+  <h2>{{ "编辑通知渠道" if editing_channel else "新建通知渠道" }}</h2>
+  {% if errors %}
+    <div class="flash error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>
+  {% endif %}
+  {% set values = form_values %}
+  {% set selected_type = values.get('channel_type', editing_channel.channel_type if editing_channel else 'telegram') %}
+  {% set selected_proxy = values.get('proxy_id', editing_channel.proxy_id if editing_channel else '') %}
+  <form method="post" action="{{ '/notification-channels/' ~ editing_channel.id if editing_channel else '/notification-channels' }}" class="form-grid">
+    <label>渠道名称<input name="name" maxlength="160" required value="{{ values.get('name', editing_channel.name if editing_channel else '') }}" placeholder="例如：值班群"></label>
+    <label>渠道类型
+      <select name="channel_type" required>
+        {% for type_value, label in channel_type_labels.items() %}
+          <option value="{{ type_value }}" {% if selected_type == type_value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>代理
+      <select name="proxy_id">
+        <option value="">直连</option>
+        {% for proxy in proxies %}
+          <option value="{{ proxy.id }}" {% if selected_proxy|string == proxy.id|string %}selected{% endif %} {% if not proxy.enabled and selected_proxy|string != proxy.id|string %}disabled{% endif %}>{{ proxy.name }} · {{ proxy.endpoint }}{% if not proxy.enabled %}（已禁用）{% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="checkbox-row"><input type="checkbox" name="enabled" {% if values.get('enabled', editing_channel.enabled if editing_channel else true) %}checked{% endif %}>启用渠道</label>
+
+    <div class="wide notification-channel-fields">
+      <span class="form-label">Telegram</span>
+      <div class="form-grid">
+        <label>Bot Token<input name="bot_token" value="{{ values.get('bot_token', '') }}" placeholder="{{ '已保存，留空则不修改' if editing_channel and selected_type == 'telegram' and channel_has_credentials(editing_channel) else '1234567890:ABC...' }}" autocomplete="off"></label>
+        <label>Chat ID<input name="chat_id" value="{{ values.get('chat_id', '') }}" placeholder="{{ '已保存，留空则不修改' if editing_channel and selected_type == 'telegram' and channel_has_credentials(editing_channel) else '-1001234567890' }}" autocomplete="off"></label>
+      </div>
+    </div>
+
+    <div class="wide notification-channel-fields">
+      <span class="form-label">飞书自定义机器人</span>
+      <div class="form-grid">
+        <label>Webhook URL<input name="webhook_url" value="{{ values.get('webhook_url', '') }}" placeholder="{{ '已保存，留空则不修改' if editing_channel and selected_type == 'feishu_webhook' and channel_has_credentials(editing_channel) else 'https://open.feishu.cn/open-apis/bot/v2/hook/...' }}" autocomplete="off"></label>
+        <label>Hook Token<input name="webhook_token" value="{{ values.get('webhook_token', '') }}" placeholder="只填 token 也可以" autocomplete="off"></label>
+        <label class="wide">签名密钥<input name="signing_secret" value="{{ values.get('signing_secret', '') }}" placeholder="{{ '已保存，留空则不修改' if editing_channel and selected_type == 'feishu_webhook' and channel_has_credentials(editing_channel) else '可选' }}" autocomplete="off"></label>
+      </div>
+    </div>
+
+    <div class="wide notification-channel-fields">
+      <span class="form-label">飞书应用机器人</span>
+      <div class="form-grid">
+        <label>App ID<input name="app_id" value="{{ values.get('app_id', '') }}" placeholder="{{ '已保存，留空则不修改' if editing_channel and selected_type == 'feishu_app' and channel_has_credentials(editing_channel) else 'cli_xxx' }}" autocomplete="off"></label>
+        <label>App Secret<input name="app_secret" value="{{ values.get('app_secret', '') }}" placeholder="{{ '已保存，留空则不修改' if editing_channel and selected_type == 'feishu_app' and channel_has_credentials(editing_channel) else 'app secret' }}" autocomplete="off"></label>
+        <label>接收 ID 类型
+          <select name="receive_id_type">
+            {% for receive_type in ["chat_id", "open_id", "union_id", "email"] %}
+              <option value="{{ receive_type }}" {% if values.get('receive_id_type', 'chat_id') == receive_type %}selected{% endif %}>{{ receive_type }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>接收 ID<input name="receive_id" value="{{ values.get('receive_id', '') }}" placeholder="{{ '已保存，留空则不修改' if editing_channel and selected_type == 'feishu_app' and channel_has_credentials(editing_channel) else '群 chat_id / open_id / email' }}" autocomplete="off"></label>
+      </div>
+    </div>
+
+    <div class="form-actions full-span">
+      {% if editing_channel %}<a class="button" href="/notification-channels">取消</a>{% endif %}
+      <button class="primary" type="submit">{{ "保存渠道" if editing_channel else "创建渠道" }}</button>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>渠道列表</h2><p class="muted">共 {{ channels|length }} 个渠道</p></div></div>
+  {% if channels %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>名称</th><th>类型</th><th>状态</th><th>代理</th><th>凭据</th><th></th></tr></thead>
+      <tbody>{% for channel in channels %}<tr>
+        <td><strong>{{ channel.name }}</strong></td>
+        <td>{{ channel_label(channel.channel_type) }}</td>
+        <td><span class="status {{ 'success' if channel.enabled else 'disabled' }}">{{ "启用" if channel.enabled else "停用" }}</span></td>
+        <td>{{ channel.proxy.name if channel.proxy else "直连" }}</td>
+        <td>{{ "已配置" if channel_has_credentials(channel) else "未配置" }}</td>
+        <td class="action-cell"><div class="actions schedule-actions">
+          <form method="post" action="/notification-channels/{{ channel.id }}/test"><button class="small primary" type="submit">测试</button></form>
+          <form method="post" action="/notification-channels/{{ channel.id }}/toggle"><button class="small" type="submit">{{ "停用" if channel.enabled else "启用" }}</button></form>
+          <a class="button small" href="/notification-channels/{{ channel.id }}/edit">编辑</a>
+          <form method="post" action="/notification-channels/{{ channel.id }}/delete" onsubmit="return confirm('删除通知渠道后，已选择该渠道的监控任务将不再向它发送通知，确定删除吗？');"><button class="small danger" type="submit">删除</button></form>
+        </div></td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+  {% else %}
+    <p class="muted">还没有通知渠道。</p>
+  {% endif %}
+</section>
+{% endblock %}

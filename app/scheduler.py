@@ -13,14 +13,16 @@ from .db import SessionLocal
 from .models import (
     ConnectivityTest,
     MonitoringCheck,
+    MonitoringNotificationDelivery,
     MonitoringTask,
+    MonitoringTaskNotificationChannel,
     Provider,
     ScheduledRun,
     ScheduledTask,
     ScheduledTaskProvider,
     utc_now,
 )
-from .notifications import send_monitoring_failure_notification, send_monitoring_recovery_notification
+from .notifications import migrate_legacy_telegram_channel, send_notification_channel_message
 from .openai_compat import VALID_CLIENT_PROFILES, run_connectivity_test
 from .proxy_support import sanitize_proxy_error
 from .security import (
@@ -400,29 +402,67 @@ async def _run_monitoring_check_with_retries(
     return last_check
 
 
-async def _send_monitoring_notification_with_retries(
+async def _send_monitoring_notifications_with_retries(
     db,
     task: MonitoringTask,
     check: MonitoringCheck,
     fernet: Fernet,
     *,
     event: str,
-) -> tuple[bool, str, int]:
+) -> tuple[str, str, int]:
     attempts = monitoring_retry_attempts(task)
     interval_seconds = monitoring_retry_interval_seconds(task)
-    notification_error = ""
-    for attempt in range(1, attempts + 1):
-        if event == "failure":
-            notified, notification_error = await send_monitoring_failure_notification(db, task, check, fernet)
+    links = [link for link in task.notification_links if link.channel is not None]
+    if not links:
+        return "skipped", "未选择通知渠道。", 0
+    sent_count = 0
+    failed_count = 0
+    skipped_count = 0
+    errors: list[str] = []
+    max_attempt_count = 0
+    for link in links:
+        channel = link.channel
+        assert channel is not None
+        delivery = MonitoringNotificationDelivery(
+            check=check,
+            channel_id=channel.id,
+            channel_name_snapshot=channel.name,
+            channel_type_snapshot=channel.channel_type,
+            event=event,
+            status="skipped",
+            attempt_count=0,
+            error="",
+        )
+        if not channel.enabled:
+            delivery.error = "通知渠道已停用。"
+            skipped_count += 1
         else:
-            notified, notification_error = await send_monitoring_recovery_notification(db, task, check, fernet)
-        if notified:
-            return notified, notification_error, attempt
-        if notification_error == "Telegram 通知未启用。":
-            return notified, notification_error, 0
-        if attempt < attempts:
-            await asyncio.sleep(interval_seconds)
-    return False, notification_error, attempts
+            last_error = ""
+            for attempt in range(1, attempts + 1):
+                ok, last_error = await send_notification_channel_message(db, channel, task, check, fernet, event=event)
+                delivery.attempt_count = attempt
+                max_attempt_count = max(max_attempt_count, attempt)
+                if ok:
+                    delivery.status = "sent"
+                    delivery.error = ""
+                    delivery.sent_at = utc_now()
+                    sent_count += 1
+                    break
+                if attempt < attempts:
+                    await asyncio.sleep(interval_seconds)
+            if delivery.status != "sent":
+                delivery.status = "failed"
+                delivery.error = last_error
+                errors.append(f"{channel.name}: {last_error}")
+                failed_count += 1
+        check.notification_deliveries.append(delivery)
+    if sent_count and not failed_count and not skipped_count:
+        return "sent", "", max_attempt_count
+    if sent_count:
+        return "partial", "；".join(errors), max_attempt_count
+    if failed_count:
+        return "failed", "；".join(errors), max_attempt_count
+    return "skipped", "所有通知渠道均已停用。", max_attempt_count
 
 
 async def execute_monitoring_task_run(task_id: int, *, fernet: Fernet) -> None:
@@ -432,10 +472,17 @@ async def execute_monitoring_task_run(task_id: int, *, fernet: Fernet) -> None:
             _test_semaphore = asyncio.Semaphore(5)
         async with _test_semaphore:
             with SessionLocal() as db:
+                migrate_legacy_telegram_channel(db, fernet)
+                db.flush()
                 task = db.scalar(
                     select(MonitoringTask)
                     .where(MonitoringTask.id == task_id)
-                    .options(selectinload(MonitoringTask.provider))
+                    .options(
+                        selectinload(MonitoringTask.provider),
+                        selectinload(MonitoringTask.notification_links).selectinload(
+                            MonitoringTaskNotificationChannel.channel
+                        ),
+                    )
                 )
                 if task is None:
                     return
@@ -469,22 +516,19 @@ async def execute_monitoring_task_run(task_id: int, *, fernet: Fernet) -> None:
                     else:
                         check.notification_event = "recovery"
                         (
-                            notified,
+                            notification_status,
                             notification_error,
                             notification_attempt_count,
-                        ) = await _send_monitoring_notification_with_retries(
+                        ) = await _send_monitoring_notifications_with_retries(
                             db, task, check, fernet, event="recovery"
                         )
                         check.notification_attempt_count = notification_attempt_count
-                        if notified:
-                            check.notification_status = "sent"
-                            check.notification_error = ""
+                        check.notification_status = notification_status
+                        if notification_status in {"sent", "partial"}:
+                            check.notification_error = "" if notification_status == "sent" else notification_error
                             task.current_success_notified = True
                             task.last_notified_at = utc_now()
                         else:
-                            check.notification_status = (
-                                "skipped" if notification_error == "Telegram 通知未启用。" else "failed"
-                            )
                             check.notification_error = notification_error
                 elif check.status == "failed":
                     task.current_success_notified = False
@@ -497,22 +541,19 @@ async def execute_monitoring_task_run(task_id: int, *, fernet: Fernet) -> None:
                     else:
                         check.notification_event = "failure"
                         (
-                            notified,
+                            notification_status,
                             notification_error,
                             notification_attempt_count,
-                        ) = await _send_monitoring_notification_with_retries(
+                        ) = await _send_monitoring_notifications_with_retries(
                             db, task, check, fernet, event="failure"
                         )
                         check.notification_attempt_count = notification_attempt_count
-                        if notified:
-                            check.notification_status = "sent"
-                            check.notification_error = ""
+                        check.notification_status = notification_status
+                        if notification_status in {"sent", "partial"}:
+                            check.notification_error = "" if notification_status == "sent" else notification_error
                             task.current_failure_notified = True
                             task.last_notified_at = utc_now()
                         else:
-                            check.notification_status = (
-                                "skipped" if notification_error == "Telegram 通知未启用。" else "failed"
-                            )
                             check.notification_error = notification_error
                 else:
                     if not check.notification_status:

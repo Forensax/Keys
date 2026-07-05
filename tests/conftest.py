@@ -58,8 +58,11 @@ def _reset_security_state() -> None:
 
 def _clear_shared_tables(connection) -> None:
     inspector_tables = [
+        "monitoring_notification_deliveries",
+        "monitoring_task_notification_channels",
         "monitoring_checks",
         "monitoring_tasks",
+        "notification_channels",
         "connectivity_tests",
         "provider_models",
         "scheduled_task_providers",

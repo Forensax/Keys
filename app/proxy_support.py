@@ -82,6 +82,8 @@ def sanitize_proxy_error(exc: Exception) -> str:
     message = "；".join(messages) if messages else "连接失败，未返回具体错误"
     message = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^@\s/]+@", r"\1***@", message)
     message = re.sub(r"(https://api\.telegram\.org/bot)[^/\s]+", r"\1***", message)
+    message = re.sub(r"(https://open\.feishu\.cn/open-apis/bot/v2/hook/)[^'\"\s/]+", r"\1***", message)
+    message = re.sub(r'("(?:app_secret|tenant_access_token)"\s*:\s*")[^"]+', r"\1***", message)
     return f"{type(exc).__name__}: {message}"[:500]
 
 

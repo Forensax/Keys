@@ -71,3 +71,19 @@ def test_proxy_error_sanitizer_redacts_telegram_bot_token() -> None:
     assert "123456" not in sanitized
     assert "secret-token" not in sanitized
     assert "https://api.telegram.org/bot***/sendMessage" in sanitized
+
+
+def test_proxy_error_sanitizer_redacts_feishu_webhook_and_app_secrets() -> None:
+    error = RuntimeError(
+        "failed for https://open.feishu.cn/open-apis/bot/v2/hook/abc-secret "
+        '{"app_secret":"app-secret","tenant_access_token":"tenant-token"}'
+    )
+
+    sanitized = sanitize_proxy_error(error)
+
+    assert "abc-secret" not in sanitized
+    assert "app-secret" not in sanitized
+    assert "tenant-token" not in sanitized
+    assert "https://open.feishu.cn/open-apis/bot/v2/hook/***" in sanitized
+    assert '"app_secret":"***"' in sanitized
+    assert '"tenant_access_token":"***"' in sanitized

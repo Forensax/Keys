@@ -19,6 +19,7 @@
   {% set selected_route = values.get('network_route', task.network_route) %}
   {% set selected_notify_recovery = values.get('notify_on_recovery', task.notify_on_recovery) %}
   {% set selected_notify_failure = values.get('notify_on_failure', task.notify_on_failure) %}
+  {% set selected_channel_ids = values.get('notification_channel_ids', task_channel_ids(task)) %}
   <form method="post" action="/monitoring/tasks/{{ task.id }}" class="form-grid schedule-form">
     <input type="hidden" name="notification_preferences_present" value="1">
     <label>任务名称<input name="name" maxlength="160" required value="{{ values.get('name', task.name) }}"></label>
@@ -54,6 +55,21 @@
       <span class="form-label">通知类型</span>
       <label class="checkbox-row"><input type="checkbox" name="notify_on_recovery" {% if selected_notify_recovery %}checked{% endif %}>恢复可用时通知</label>
       <label class="checkbox-row"><input type="checkbox" name="notify_on_failure" {% if selected_notify_failure %}checked{% endif %}>变为不可用时通知</label>
+    </div>
+    <div class="wide">
+      <span class="form-label">通知渠道</span>
+      {% if notification_channels %}
+        <div class="checkbox-list">
+          {% for channel in notification_channels %}
+            <label class="checkbox-row">
+              <input type="checkbox" name="notification_channel_ids" value="{{ channel.id }}" {% if channel.id in selected_channel_ids %}checked{% endif %}>
+              {{ channel.name }} · {{ notification_channel_labels.get(channel.channel_type, channel.channel_type) if notification_channel_labels is defined else channel.channel_type }}{% if not channel.enabled %}（已禁用）{% endif %}
+            </label>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="muted small">还没有通知渠道，先到“通知渠道”页面创建 Telegram 或飞书渠道。</p>
+      {% endif %}
     </div>
     <label class="checkbox-row"><input type="checkbox" name="enabled" {% if values.get('enabled', task.enabled) %}checked{% endif %}>启用任务</label>
     <div class="form-actions full-span"><a class="button" href="/monitoring">取消</a><button class="primary" type="submit">保存任务</button></div>

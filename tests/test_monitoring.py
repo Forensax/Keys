@@ -9,12 +9,22 @@ import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, select
 
+from app import main as main_module
 from app import notifications as notifications_module
 from app import scheduler as scheduler_module
 from app.config import settings
 from app.db import Base, SessionLocal, ensure_monitoring_columns
 from app.main import app
-from app.models import ConnectivityTest, MonitoringCheck, MonitoringTask, NetworkProxy, Provider
+from app.models import (
+    ConnectivityTest,
+    MonitoringCheck,
+    MonitoringNotificationDelivery,
+    MonitoringTask,
+    MonitoringTaskNotificationChannel,
+    NetworkProxy,
+    NotificationChannel,
+    Provider,
+)
 from app.openai_compat import CLIENT_PROFILE_CODEX, ConnectivityTestResult
 from app.security import (
     authorize_scheduler_vault,
@@ -57,6 +67,25 @@ def authorize_background() -> None:
         db.commit()
 
 
+def create_telegram_channel(client: TestClient, *, name: str = "TG 主群") -> int:
+    response = client.post(
+        "/notification-channels",
+        data={
+            "name": name,
+            "channel_type": "telegram",
+            "bot_token": "123:token",
+            "chat_id": "-100",
+            "enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    with SessionLocal() as db:
+        channel = db.scalar(select(NotificationChannel).where(NotificationChannel.name == name))
+        assert channel is not None
+        return channel.id
+
+
 def monitoring_fernet():
     with SessionLocal() as db:
         fernet = get_scheduler_fernet(db, settings.session_secret)
@@ -78,7 +107,13 @@ def test_monitoring_tables_are_created_and_migration_is_repeatable(tmp_path) -> 
     ensure_monitoring_columns(legacy)
 
     tables = set(inspect(legacy).get_table_names())
-    assert {"monitoring_tasks", "monitoring_checks"} <= tables
+    assert {
+        "monitoring_tasks",
+        "monitoring_checks",
+        "notification_channels",
+        "monitoring_task_notification_channels",
+        "monitoring_notification_deliveries",
+    } <= tables
     task_columns = {column["name"] for column in inspect(legacy).get_columns("monitoring_tasks")}
     check_columns = {column["name"] for column in inspect(legacy).get_columns("monitoring_checks")}
     assert {
@@ -100,6 +135,8 @@ def test_monitoring_tables_are_created_and_migration_is_repeatable(tmp_path) -> 
         "attempt_count",
         "notification_attempt_count",
     } <= check_columns
+    delivery_columns = {column["name"] for column in inspect(legacy).get_columns("monitoring_notification_deliveries")}
+    assert {"check_id", "channel_id", "event", "status", "attempt_count", "error", "sent_at"} <= delivery_columns
 
 
 def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> None:
@@ -110,7 +147,7 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert page.status_code == 200
     assert "监控" in page.text
     assert '<a class="button" href="/monitoring?panel=vault">锁定后台密钥</a>' in page.text
-    assert '<a class="button" href="/monitoring?panel=telegram">TG通知设置</a>' in page.text
+    assert '<a class="button" href="/notification-channels">通知渠道</a>' in page.text
     assert '<a class="button primary" href="/monitoring?panel=new_task">新建监控任务</a>' in page.text
     assert "监控任务" in page.text
     assert "最近检测" in page.text
@@ -138,13 +175,10 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert "保存通知配置" not in vault_panel.text
     assert 'name="retry_attempts"' not in vault_panel.text
 
-    telegram_panel = client.get("/monitoring?panel=telegram")
-    assert telegram_panel.status_code == 200
-    assert "Telegram 通知" in telegram_panel.text
-    assert "保存通知配置" in telegram_panel.text
-    assert_monitoring_panel_close_button(telegram_panel.text)
-    assert "后台密钥可用" not in telegram_panel.text
-    assert 'name="retry_attempts"' not in telegram_panel.text
+    invalid_panel = client.get("/monitoring?panel=telegram")
+    assert invalid_panel.status_code == 200
+    assert "监控任务" in invalid_panel.text
+    assert "保存通知配置" not in invalid_panel.text
 
     new_task_panel = client.get("/monitoring?panel=new_task")
     assert new_task_panel.status_code == 200
@@ -294,6 +328,79 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert 'name="notify_on_recovery"' in edit_page.text
     assert 'name="notify_on_failure"' in edit_page.text
 
+    client.close()
+
+
+def test_notification_channel_page_creates_and_tests_tg_and_feishu_channels(monkeypatch) -> None:
+    client = setup_client()
+
+    page = client.get("/notification-channels")
+    assert page.status_code == 200
+    assert "通知渠道" in page.text
+    assert "Telegram" in page.text
+    assert "飞书自定义机器人" in page.text
+    assert "飞书应用机器人" in page.text
+
+    telegram_id = create_telegram_channel(client)
+    webhook = client.post(
+        "/notification-channels",
+        data={
+            "name": "飞书值班群",
+            "channel_type": "feishu_webhook",
+            "webhook_token": "hook-token",
+            "signing_secret": "signing-secret",
+            "enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert webhook.status_code == 303
+    app_bot = client.post(
+        "/notification-channels",
+        data={
+            "name": "飞书应用机器人",
+            "channel_type": "feishu_app",
+            "app_id": "cli_test",
+            "app_secret": "app-secret",
+            "receive_id_type": "chat_id",
+            "receive_id": "oc_test",
+            "enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert app_bot.status_code == 303
+
+    with SessionLocal() as db:
+        channels = list(db.scalars(select(NotificationChannel).order_by(NotificationChannel.name)))
+        assert len(channels) == 3
+        assert all(channel.encrypted_secret_json for channel in channels)
+        assert all("secret" not in channel.encrypted_secret_json for channel in channels)
+        webhook_channel = db.scalar(select(NotificationChannel).where(NotificationChannel.name == "飞书值班群"))
+        app_channel = db.scalar(select(NotificationChannel).where(NotificationChannel.name == "飞书应用机器人"))
+        assert webhook_channel is not None
+        assert app_channel is not None
+        webhook_id = webhook_channel.id
+        app_id = app_channel.id
+
+    test_calls: list[tuple[str, str]] = []
+
+    async def fake_send_test_notification_channel(db, channel, fernet):
+        test_calls.append((channel.name, channel.channel_type))
+
+    monkeypatch.setattr(main_module, "send_test_notification_channel", fake_send_test_notification_channel)
+
+    assert client.post(f"/notification-channels/{telegram_id}/test", follow_redirects=False).status_code == 303
+    assert client.post(f"/notification-channels/{webhook_id}/test", follow_redirects=False).status_code == 303
+    assert client.post(f"/notification-channels/{app_id}/test", follow_redirects=False).status_code == 303
+    assert test_calls == [
+        ("TG 主群", "telegram"),
+        ("飞书值班群", "feishu_webhook"),
+        ("飞书应用机器人", "feishu_app"),
+    ]
+
+    rendered = client.get("/notification-channels")
+    assert "123:token" not in rendered.text
+    assert "hook-token" not in rendered.text
+    assert "app-secret" not in rendered.text
     client.close()
 
 
@@ -661,7 +768,7 @@ def test_monitoring_failure_notification_retries_and_records_failure_event(monke
         assert check.notification_event == "failure"
         assert check.notification_status == "failed"
         assert check.notification_attempt_count == 2
-        assert check.notification_error == "RuntimeError: TG down"
+        assert check.notification_error == "默认 Telegram: RuntimeError: TG down"
     assert telegram_calls == 2
     client.close()
 
@@ -826,7 +933,77 @@ def test_monitoring_records_failed_telegram_after_retry_exhaustion(monkeypatch) 
         assert check is not None
         assert check.notification_status == "failed"
         assert check.notification_attempt_count == 2
-        assert check.notification_error == "RuntimeError: TG still down"
+        assert check.notification_error == "默认 Telegram: RuntimeError: TG still down"
+    client.close()
+
+
+def test_monitoring_multi_channel_notification_records_partial_delivery(monkeypatch) -> None:
+    client = setup_client()
+    provider_id = create_provider(client)
+    authorize_background()
+    fernet = monitoring_fernet()
+
+    async def fake_run_connectivity_test(*args, **kwargs):
+        return ConnectivityTestResult("success", 12, "", '{"result":"ok"}')
+
+    async def fake_send_notification_channel_message(db, channel, task, check, fernet, *, event):
+        if channel.name == "TG 主群":
+            return True, ""
+        return False, "飞书接口失败"
+
+    monkeypatch.setattr(scheduler_module, "run_connectivity_test", fake_run_connectivity_test)
+    monkeypatch.setattr(scheduler_module, "send_notification_channel_message", fake_send_notification_channel_message)
+    with SessionLocal() as db:
+        task = MonitoringTask(
+            name="watch multi channel",
+            enabled=True,
+            provider_id=provider_id,
+            provider_name_snapshot="Relay",
+            provider_base_url_snapshot="https://relay.example/v1",
+            model_id="gpt-watch",
+            client_profile=CLIENT_PROFILE_CODEX,
+            network_route="direct",
+            interval_minutes=5,
+            retry_attempts=1,
+            retry_interval_seconds=1,
+        )
+        tg = NotificationChannel(name="TG 主群", channel_type="telegram", enabled=True)
+        feishu = NotificationChannel(name="飞书值班群", channel_type="feishu_webhook", enabled=True)
+        task.notification_links = [
+            MonitoringTaskNotificationChannel(
+                channel=tg,
+                channel_name_snapshot=tg.name,
+                channel_type_snapshot=tg.channel_type,
+            ),
+            MonitoringTaskNotificationChannel(
+                channel=feishu,
+                channel_name_snapshot=feishu.name,
+                channel_type_snapshot=feishu.channel_type,
+            ),
+        ]
+        db.add(task)
+        db.commit()
+        task_id = task.id
+
+    asyncio.run(scheduler_module.execute_monitoring_task_run(task_id, fernet=fernet))
+
+    with SessionLocal() as db:
+        check = db.scalar(select(MonitoringCheck).where(MonitoringCheck.task_id == task_id))
+        assert check is not None
+        assert check.notification_status == "partial"
+        assert check.notification_event == "recovery"
+        assert check.notification_error == "飞书值班群: 飞书接口失败"
+        deliveries = list(
+            db.scalars(
+                select(MonitoringNotificationDelivery)
+                .where(MonitoringNotificationDelivery.check_id == check.id)
+                .order_by(MonitoringNotificationDelivery.channel_name_snapshot)
+            )
+        )
+        assert [(delivery.channel_name_snapshot, delivery.status) for delivery in deliveries] == [
+            ("TG 主群", "sent"),
+            ("飞书值班群", "failed"),
+        ]
     client.close()
 
 
@@ -922,11 +1099,15 @@ def test_telegram_config_is_encrypted_and_test_message_uses_proxy(monkeypatch) -
         follow_redirects=False,
     )
     assert saved.status_code == 303
-    assert saved.headers["location"] == "/monitoring?panel=telegram"
+    assert saved.headers["location"] == "/notification-channels"
     with SessionLocal() as db:
         encrypted_token = get_setting(db, "telegram_bot_token_encrypted")
         assert encrypted_token
         assert "123:token" not in encrypted_token
+        channel = db.scalar(select(NotificationChannel).where(NotificationChannel.name == "默认 Telegram"))
+        assert channel is not None
+        assert channel.proxy_id == proxy_id
+        channel_id = channel.id
 
     telegram_calls: list[dict[str, str | None]] = []
 
@@ -936,7 +1117,7 @@ def test_telegram_config_is_encrypted_and_test_message_uses_proxy(monkeypatch) -
     monkeypatch.setattr(notifications_module, "post_telegram_message", fake_post_telegram_message)
     tested = client.post("/monitoring/telegram/test", follow_redirects=False)
     assert tested.status_code == 303
-    assert tested.headers["location"] == "/monitoring?panel=telegram"
+    assert tested.headers["location"] == "/notification-channels"
     assert telegram_calls == [
         {
             "bot_token": "123:token",
@@ -945,7 +1126,7 @@ def test_telegram_config_is_encrypted_and_test_message_uses_proxy(monkeypatch) -
             "proxy_url": "socks5h://u:p@proxy.example:1080",
         }
     ]
-    page = client.get("/monitoring?panel=telegram")
+    page = client.get(f"/notification-channels/{channel_id}/edit")
     assert "123:token" not in page.text
     assert "已保存，留空则不修改" in page.text
     client.close()
@@ -965,7 +1146,7 @@ def test_telegram_api_error_message_uses_safe_description() -> None:
     assert "sendMessage" not in message
 
 
-def test_backup_v9_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_reset) -> None:
+def test_backup_v10_round_trips_monitoring_tasks_and_notification_channel_secrets(shared_db_reset) -> None:
     client = setup_client()
     provider_id = create_provider(client)
     client.post(
@@ -973,6 +1154,10 @@ def test_backup_v9_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_r
         data={"bot_token": "123:token", "chat_id": "-100", "enabled": "on"},
         follow_redirects=False,
     )
+    with SessionLocal() as db:
+        channel = db.scalar(select(NotificationChannel).where(NotificationChannel.name == "默认 Telegram"))
+        assert channel is not None
+        channel_id = channel.id
     created = client.post(
         "/monitoring/tasks",
         data={
@@ -987,20 +1172,25 @@ def test_backup_v9_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_r
             "notification_preferences_present": "1",
             "notify_on_recovery": "on",
             "notify_on_failure": "on",
+            "notification_channel_ids": str(channel_id),
         },
         follow_redirects=False,
     )
     assert created.status_code == 303
 
     public_export = client.post("/export", data={"password": ""}).json()
-    assert public_export["version"] == 9
+    assert public_export["version"] == 10
     assert public_export["telegram"]["has_credentials"] is True
     assert "bot_token" not in public_export["telegram"]
+    assert public_export["notification_channels"][0]["name"] == "默认 Telegram"
+    assert public_export["notification_channels"][0]["has_credentials"] is True
+    assert "secrets" not in public_export["notification_channels"][0]
     assert public_export["monitoring_tasks"][0]["name"] == "watch relay"
     assert public_export["monitoring_tasks"][0]["retry_attempts"] == 4
     assert public_export["monitoring_tasks"][0]["retry_interval_seconds"] == 12
     assert public_export["monitoring_tasks"][0]["notify_on_recovery"] is True
     assert public_export["monitoring_tasks"][0]["notify_on_failure"] is True
+    assert public_export["monitoring_tasks"][0]["notification_channels"] == ["默认 Telegram"]
 
     secret_export = client.post(
         "/export",
@@ -1008,6 +1198,8 @@ def test_backup_v9_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_r
     ).json()
     assert secret_export["telegram"]["bot_token"] == "123:token"
     assert secret_export["telegram"]["chat_id"] == "-100"
+    assert secret_export["notification_channels"][0]["secrets"]["bot_token"] == "123:token"
+    assert secret_export["notification_channels"][0]["secrets"]["chat_id"] == "-100"
     client.close()
 
     shared_db_reset()
@@ -1028,6 +1220,10 @@ def test_backup_v9_round_trips_monitoring_tasks_and_telegram_secrets(shared_db_r
         assert task.retry_interval_seconds == 12
         assert task.notify_on_recovery is True
         assert task.notify_on_failure is True
+        assert [link.channel_name_snapshot for link in task.notification_links] == ["默认 Telegram"]
+        channel = db.scalar(select(NotificationChannel).where(NotificationChannel.name == "默认 Telegram"))
+        assert channel is not None
+        assert channel.encrypted_secret_json
         assert get_setting(db, "telegram_bot_token_encrypted")
     restored_client.close()
 

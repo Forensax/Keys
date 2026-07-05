@@ -6,11 +6,11 @@
 <section class="section-head">
   <div>
     <h1>监控</h1>
-    <p class="muted">单站持续检测，恢复可用时发送 Telegram 通知。</p>
+    <p class="muted">单站持续检测，按任务选择的通知渠道发送恢复或不可用提醒。</p>
   </div>
   <div class="button-row">
     <a class="button" href="/monitoring?panel=vault">锁定后台密钥</a>
-    <a class="button" href="/monitoring?panel=telegram">TG通知设置</a>
+    <a class="button" href="/notification-channels">通知渠道</a>
     <a class="button primary" href="/monitoring?panel=new_task">新建监控任务</a>
   </div>
 </section>
@@ -45,38 +45,6 @@
 {% endif %}
 {% endif %}
 
-{% if active_panel == "telegram" %}
-<section class="panel schedule-create-panel dismissible-panel">
-  <a class="panel-close" href="/monitoring" aria-label="关闭并返回任务列表" title="关闭">×</a>
-  <h2>Telegram 通知</h2>
-  <form method="post" action="/monitoring/telegram" class="form-grid">
-    <label>Bot Token
-      <input name="bot_token" placeholder="{{ '已保存，留空则不修改' if telegram_config.has_credentials else '1234567890:ABC...' }}" autocomplete="off">
-    </label>
-    <label>Chat ID
-      <input name="chat_id" placeholder="{{ '已保存，留空则不修改' if telegram_config.has_credentials else '-1001234567890' }}" autocomplete="off">
-    </label>
-    <label>Telegram 代理
-      <select name="proxy_id">
-        <option value="">直连</option>
-        {% for proxy in proxies %}
-          <option value="{{ proxy.id }}" {% if telegram_config.proxy_id == proxy.id %}selected{% endif %} {% if not proxy.enabled and telegram_config.proxy_id != proxy.id %}disabled{% endif %}>{{ proxy.name }} · {{ proxy.endpoint }}{% if not proxy.enabled %}（已禁用）{% endif %}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label class="checkbox-row"><input type="checkbox" name="enabled" {% if telegram_config.enabled %}checked{% endif %}>启用 Telegram 通知</label>
-    <div class="form-actions full-span">
-      <button class="primary" type="submit">保存通知配置</button>
-    </div>
-  </form>
-  {% if telegram_config.has_credentials %}
-    <form method="post" action="/monitoring/telegram/test" class="inline-form">
-      <button type="submit">发送测试消息</button>
-    </form>
-  {% endif %}
-</section>
-{% endif %}
-
 {% if active_panel == "new_task" %}
 <section class="panel schedule-create-panel dismissible-panel">
   <a class="panel-close" href="/monitoring" aria-label="关闭并返回任务列表" title="关闭">×</a>
@@ -89,6 +57,7 @@
   {% set selected_route = form_values.get('network_route', 'default') %}
   {% set selected_notify_recovery = form_values.get('notify_on_recovery', true) %}
   {% set selected_notify_failure = form_values.get('notify_on_failure', false) %}
+  {% set selected_channel_ids = form_values.get('notification_channel_ids', []) %}
   <form method="post" action="/monitoring/tasks" class="form-grid schedule-form">
     <input type="hidden" name="notification_preferences_present" value="1">
     <label>任务名称<input name="name" maxlength="160" required value="{{ form_values.get('name', '') }}" placeholder="例如：监控某站可用窗口"></label>
@@ -126,6 +95,21 @@
       <label class="checkbox-row"><input type="checkbox" name="notify_on_recovery" {% if selected_notify_recovery %}checked{% endif %}>恢复可用时通知</label>
       <label class="checkbox-row"><input type="checkbox" name="notify_on_failure" {% if selected_notify_failure %}checked{% endif %}>变为不可用时通知</label>
     </div>
+    <div class="wide">
+      <span class="form-label">通知渠道</span>
+      {% if notification_channels %}
+        <div class="checkbox-list">
+          {% for channel in notification_channels %}
+            <label class="checkbox-row">
+              <input type="checkbox" name="notification_channel_ids" value="{{ channel.id }}" {% if channel.id in selected_channel_ids %}checked{% endif %}>
+              {{ channel.name }} · {{ notification_channel_labels.get(channel.channel_type, channel.channel_type) }}{% if not channel.enabled %}（已禁用）{% endif %}
+            </label>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="muted small">还没有通知渠道，先到“通知渠道”页面创建 Telegram 或飞书渠道。</p>
+      {% endif %}
+    </div>
     <label class="checkbox-row"><input type="checkbox" name="enabled" {% if form_values.get('enabled') %}checked{% endif %}>创建后立即启用</label>
     <div class="form-actions full-span"><button class="primary" type="submit">创建监控任务</button></div>
   </form>
@@ -150,6 +134,7 @@
               <td class="monitoring-period-cell">
                 <span>每 {{ task.interval_minutes }} 分钟 · 重试 {{ task.retry_attempts }} 次</span>
                 <span class="muted small">{% if task.notify_on_recovery and task.notify_on_failure %}恢复/不可用{% elif task.notify_on_failure %}不可用{% else %}恢复{% endif %}</span>
+                <span class="muted small monitoring-channel-summary">{{ task_channels_summary(task) }}</span>
               </td>
               <td>
                 <span class="status {{ task.last_status or ('success' if task.enabled else 'disabled') }}">{{ "运行中" if task_is_running(task.id) else (task.last_status or ("启用" if task.enabled else "停用")) }}</span>
@@ -208,7 +193,8 @@
         <td class="mono">{{ check.model_id }}</td>
         <td><span class="status {{ check.status }}">{{ check.status }}</span></td>
         <td>{{ check.latency_ms if check.latency_ms is not none else "" }}{% if check.latency_ms is not none %} ms{% endif %}{% if check.attempt_count %}<span class="muted small"> 检测 {{ check.attempt_count }}/{{ check.task.retry_attempts if check.task else check.attempt_count }}</span>{% endif %}</td>
-        <td><span class="status {{ check.notification_status }}"{% if check.notification_error %} data-response-tooltip="{{ check.notification_error }}"{% endif %}>{{ check.notification_status }}</span>{% if check.notification_event %}<span class="muted small"> · {{ "不可用" if check.notification_event == "failure" else "恢复" }}</span>{% endif %}{% if check.notification_attempt_count %}<span class="muted small"> 通知 {{ check.notification_attempt_count }}/{{ check.task.retry_attempts if check.task else check.notification_attempt_count }}</span>{% endif %}</td>
+        {% set notification_tooltip = notification_summary(check) %}
+        <td><span class="status {{ check.notification_status }}"{% if notification_tooltip %} data-response-tooltip="{{ notification_tooltip }}"{% endif %}>{{ check.notification_status }}</span>{% if check.notification_event %}<span class="muted small"> · {{ "不可用" if check.notification_event == "failure" else "恢复" }}</span>{% endif %}{% if check.notification_attempt_count %}<span class="muted small"> 通知 {{ check.notification_attempt_count }}/{{ check.task.retry_attempts if check.task else check.notification_attempt_count }}</span>{% endif %}</td>
         {% if check.status == "success" %}
           {% set response_text = check.raw_response_excerpt or "成功（响应正文为空）" %}
         {% else %}

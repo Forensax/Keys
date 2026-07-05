@@ -50,6 +50,27 @@ class NetworkProxy(Base):
         return bool(self.encrypted_username or self.encrypted_password)
 
 
+class NotificationChannel(Base):
+    __tablename__ = "notification_channels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False, unique=True, index=True)
+    channel_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    proxy_id: Mapped[int | None] = mapped_column(
+        ForeignKey("network_proxies.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    config_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    encrypted_secret_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    proxy: Mapped[NetworkProxy | None] = relationship(foreign_keys=[proxy_id])
+    task_links: Mapped[list["MonitoringTaskNotificationChannel"]] = relationship(
+        back_populates="channel", cascade="all, delete-orphan"
+    )
+
+
 class ProviderGroup(Base):
     __tablename__ = "provider_groups"
 
@@ -217,6 +238,27 @@ class MonitoringTask(Base):
     checks: Mapped[list["MonitoringCheck"]] = relationship(
         back_populates="task", order_by="desc(MonitoringCheck.checked_at)", passive_deletes=True
     )
+    notification_links: Mapped[list["MonitoringTaskNotificationChannel"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan", order_by="MonitoringTaskNotificationChannel.id"
+    )
+
+
+class MonitoringTaskNotificationChannel(Base):
+    __tablename__ = "monitoring_task_notification_channels"
+    __table_args__ = (UniqueConstraint("task_id", "channel_id", name="uq_monitoring_task_notification_channel"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("monitoring_tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    channel_id: Mapped[int | None] = mapped_column(
+        ForeignKey("notification_channels.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    channel_name_snapshot: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    channel_type_snapshot: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+
+    task: Mapped[MonitoringTask] = relationship(back_populates="notification_links")
+    channel: Mapped[NotificationChannel | None] = relationship(back_populates="task_links", foreign_keys=[channel_id])
 
 
 class MonitoringCheck(Base):
@@ -248,6 +290,31 @@ class MonitoringCheck(Base):
 
     task: Mapped[MonitoringTask | None] = relationship(back_populates="checks", foreign_keys=[task_id])
     provider: Mapped[Provider | None] = relationship(foreign_keys=[provider_id])
+    notification_deliveries: Mapped[list["MonitoringNotificationDelivery"]] = relationship(
+        back_populates="check", cascade="all, delete-orphan", order_by="MonitoringNotificationDelivery.id"
+    )
+
+
+class MonitoringNotificationDelivery(Base):
+    __tablename__ = "monitoring_notification_deliveries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    check_id: Mapped[int | None] = mapped_column(
+        ForeignKey("monitoring_checks.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    channel_id: Mapped[int | None] = mapped_column(
+        ForeignKey("notification_channels.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    channel_name_snapshot: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    channel_type_snapshot: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    event: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="skipped")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    check: Mapped[MonitoringCheck | None] = relationship(back_populates="notification_deliveries", foreign_keys=[check_id])
+    channel: Mapped[NotificationChannel | None] = relationship(foreign_keys=[channel_id])
 
 
 class ConnectivityTest(Base):

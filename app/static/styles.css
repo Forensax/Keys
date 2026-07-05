@@ -269,6 +269,14 @@ select:focus {
   width: auto;
 }
 
+.checkbox-list {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
 button,
 .button {
   align-items: center;

@@ -26,8 +26,11 @@ from .db import get_db, init_db
 from .models import (
     ConnectivityTest,
     MonitoringCheck,
+    MonitoringNotificationDelivery,
     MonitoringTask,
+    MonitoringTaskNotificationChannel,
     NetworkProxy,
+    NotificationChannel,
     Provider,
     ProviderGroup,
     ProviderModel,
@@ -37,11 +40,22 @@ from .models import (
     utc_now,
 )
 from .notifications import (
+    CHANNEL_TYPE_FEISHU_APP,
+    CHANNEL_TYPE_FEISHU_WEBHOOK,
+    CHANNEL_TYPE_TELEGRAM,
+    NOTIFICATION_CHANNEL_TYPE_LABELS,
     SETTING_TELEGRAM_BOT_TOKEN,
     SETTING_TELEGRAM_CHAT_ID,
     SETTING_TELEGRAM_ENABLED,
     SETTING_TELEGRAM_PROXY_ID,
+    VALID_NOTIFICATION_CHANNEL_TYPES,
+    channel_config,
+    channel_has_credentials,
+    channel_secrets,
+    encrypt_channel_secrets,
+    migrate_legacy_telegram_channel,
     read_telegram_config,
+    send_test_notification_channel,
     send_test_telegram_message,
 )
 from .openai_compat import (
@@ -1717,6 +1731,7 @@ def monitoring_task_or_404(db: Session, task_id: int) -> MonitoringTask:
         .options(
             selectinload(MonitoringTask.provider),
             selectinload(MonitoringTask.checks),
+            selectinload(MonitoringTask.notification_links).selectinload(MonitoringTaskNotificationChannel.channel),
         )
     )
     if task is None:
@@ -1851,6 +1866,186 @@ def build_monitoring_timelines(
     return timelines
 
 
+def all_notification_channels(db: Session) -> list[NotificationChannel]:
+    return list(
+        db.scalars(
+            select(NotificationChannel)
+            .options(
+                selectinload(NotificationChannel.proxy),
+                selectinload(NotificationChannel.task_links),
+            )
+            .order_by(NotificationChannel.name, NotificationChannel.id)
+        ).all()
+    )
+
+
+def notification_channel_label(channel_type: str) -> str:
+    return NOTIFICATION_CHANNEL_TYPE_LABELS.get(channel_type, channel_type)
+
+
+def notification_channel_has_secret(channel: NotificationChannel) -> bool:
+    return channel_has_credentials(channel)
+
+
+def monitoring_task_channel_ids(task: MonitoringTask) -> list[int]:
+    return [link.channel_id for link in task.notification_links if link.channel_id is not None]
+
+
+def monitoring_task_channels_summary(task: MonitoringTask) -> str:
+    names = [link.channel.name if link.channel else link.channel_name_snapshot for link in task.notification_links]
+    names = [name for name in names if name]
+    if not names:
+        return "未选择渠道"
+    if len(names) <= 2:
+        return " / ".join(names)
+    return f"{' / '.join(names[:2])} 等 {len(names)} 个"
+
+
+def monitoring_notification_summary(check: MonitoringCheck) -> str:
+    deliveries = list(check.notification_deliveries)
+    if not deliveries:
+        return check.notification_error
+    parts = []
+    for delivery in deliveries:
+        detail = delivery.error if delivery.error else "OK"
+        parts.append(f"{delivery.channel_name_snapshot}: {delivery.status}（{delivery.attempt_count} 次）{detail}")
+    return "\n".join(parts)
+
+
+def parse_notification_channel_ids(db: Session, raw_ids: list[int] | None) -> tuple[list[NotificationChannel], list[str]]:
+    errors: list[str] = []
+    clean_ids = list(dict.fromkeys(raw_ids or []))
+    if not clean_ids:
+        return [], errors
+    channels = list(
+        db.scalars(select(NotificationChannel).where(NotificationChannel.id.in_(clean_ids)).order_by(NotificationChannel.name)).all()
+    )
+    if len(channels) != len(clean_ids):
+        errors.append("部分通知渠道不存在。")
+    return channels, errors
+
+
+def set_monitoring_task_channels(task: MonitoringTask, channels: list[NotificationChannel]) -> None:
+    task.notification_links.clear()
+    for channel in channels:
+        task.notification_links.append(
+            MonitoringTaskNotificationChannel(
+                channel_id=channel.id,
+                channel_name_snapshot=channel.name,
+                channel_type_snapshot=channel.channel_type,
+            )
+        )
+
+
+def notification_channel_form_values(
+    *,
+    name: str = "",
+    channel_type: str = CHANNEL_TYPE_TELEGRAM,
+    proxy_id: str = "",
+    enabled: str | None = None,
+    bot_token: str = "",
+    chat_id: str = "",
+    webhook_url: str = "",
+    webhook_token: str = "",
+    signing_secret: str = "",
+    app_id: str = "",
+    app_secret: str = "",
+    receive_id_type: str = "chat_id",
+    receive_id: str = "",
+) -> dict[str, Any]:
+    return {
+        "name": name.strip(),
+        "channel_type": channel_type.strip(),
+        "proxy_id": proxy_id.strip(),
+        "enabled": enabled == "on",
+        "bot_token": bot_token.strip(),
+        "chat_id": chat_id.strip(),
+        "webhook_url": webhook_url.strip(),
+        "webhook_token": webhook_token.strip(),
+        "signing_secret": signing_secret.strip(),
+        "app_id": app_id.strip(),
+        "app_secret": app_secret.strip(),
+        "receive_id_type": receive_id_type.strip() or "chat_id",
+        "receive_id": receive_id.strip(),
+    }
+
+
+def validate_notification_channel_values(
+    db: Session,
+    values: dict[str, Any],
+    *,
+    existing: NotificationChannel | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    if not values["name"]:
+        errors.append("渠道名称不能为空。")
+    elif len(values["name"]) > 160:
+        errors.append("渠道名称不能超过 160 个字符。")
+    duplicate = db.scalar(select(NotificationChannel).where(NotificationChannel.name == values["name"]))
+    if duplicate is not None and (existing is None or duplicate.id != existing.id):
+        errors.append("渠道名称已存在。")
+    if values["channel_type"] not in VALID_NOTIFICATION_CHANNEL_TYPES:
+        errors.append("通知渠道类型无效。")
+    if values["proxy_id"]:
+        try:
+            proxy = db.get(NetworkProxy, int(values["proxy_id"]))
+        except ValueError:
+            proxy = None
+        if proxy is None:
+            errors.append("通知渠道代理不存在。")
+        elif not proxy.enabled:
+            errors.append("不能选择已禁用的通知渠道代理。")
+    if values["channel_type"] == CHANNEL_TYPE_TELEGRAM:
+        has_existing_secret = existing is not None and existing.channel_type == values["channel_type"] and channel_has_credentials(existing)
+        if not has_existing_secret and (not values["bot_token"] or not values["chat_id"]):
+            errors.append("Telegram 渠道需要 Bot Token 和 Chat ID。")
+    elif values["channel_type"] == CHANNEL_TYPE_FEISHU_WEBHOOK:
+        has_existing_secret = existing is not None and existing.channel_type == values["channel_type"] and channel_has_credentials(existing)
+        if not has_existing_secret and not (values["webhook_url"] or values["webhook_token"]):
+            errors.append("飞书自定义机器人需要 Webhook URL 或 Hook Token。")
+    elif values["channel_type"] == CHANNEL_TYPE_FEISHU_APP:
+        has_existing_secret = existing is not None and existing.channel_type == values["channel_type"] and channel_has_credentials(existing)
+        if not has_existing_secret and (not values["app_id"] or not values["app_secret"] or not values["receive_id"]):
+            errors.append("飞书应用机器人需要 App ID、App Secret 和接收 ID。")
+        if values["receive_id_type"] not in {"chat_id", "open_id", "union_id", "email"}:
+            errors.append("飞书应用机器人接收 ID 类型无效。")
+    return errors
+
+
+def apply_notification_channel_values(
+    channel: NotificationChannel,
+    values: dict[str, Any],
+    fernet,
+) -> None:
+    channel.name = values["name"]
+    channel.channel_type = values["channel_type"]
+    channel.enabled = values["enabled"]
+    channel.proxy_id = int(values["proxy_id"]) if values["proxy_id"] else None
+    config: dict[str, Any] = {}
+    secrets: dict[str, str] = {}
+    existing_secrets = channel_secrets(channel, fernet) if channel.encrypted_secret_json else {}
+    if channel.channel_type == CHANNEL_TYPE_TELEGRAM:
+        secrets = {
+            "bot_token": values["bot_token"] or existing_secrets.get("bot_token", ""),
+            "chat_id": values["chat_id"] or existing_secrets.get("chat_id", ""),
+        }
+    elif channel.channel_type == CHANNEL_TYPE_FEISHU_WEBHOOK:
+        secrets = {
+            "webhook_url": values["webhook_url"] or existing_secrets.get("webhook_url", ""),
+            "webhook_token": values["webhook_token"] or existing_secrets.get("webhook_token", ""),
+            "signing_secret": values["signing_secret"] or existing_secrets.get("signing_secret", ""),
+        }
+    else:
+        config = {"receive_id_type": values["receive_id_type"]}
+        secrets = {
+            "app_id": values["app_id"] or existing_secrets.get("app_id", ""),
+            "app_secret": values["app_secret"] or existing_secrets.get("app_secret", ""),
+            "receive_id": values["receive_id"] or existing_secrets.get("receive_id", ""),
+        }
+    channel.config_json = json.dumps(config, ensure_ascii=False)
+    channel.encrypted_secret_json = encrypt_channel_secrets(secrets, fernet)
+
+
 def monitoring_page_context(
     db: Session,
     *,
@@ -1858,17 +2053,26 @@ def monitoring_page_context(
     form_values: dict[str, Any] | None = None,
     errors: list[str] | None = None,
 ) -> dict[str, Any]:
-    if active_panel not in {"vault", "telegram", "new_task"}:
+    if active_panel not in {"vault", "new_task"}:
         active_panel = ""
     tasks = list(
         db.scalars(
             select(MonitoringTask)
-            .options(selectinload(MonitoringTask.provider), selectinload(MonitoringTask.checks))
+            .options(
+                selectinload(MonitoringTask.provider),
+                selectinload(MonitoringTask.checks),
+                selectinload(MonitoringTask.notification_links).selectinload(MonitoringTaskNotificationChannel.channel),
+            )
             .order_by(MonitoringTask.created_at, MonitoringTask.id)
         ).all()
     )
     recent_checks = list(
-        db.scalars(select(MonitoringCheck).order_by(MonitoringCheck.checked_at.desc()).limit(20)).all()
+        db.scalars(
+            select(MonitoringCheck)
+            .options(selectinload(MonitoringCheck.notification_deliveries))
+            .order_by(MonitoringCheck.checked_at.desc())
+            .limit(20)
+        ).all()
     )
     providers = list(
         db.scalars(select(Provider).where(Provider.archived_at.is_(None)).order_by(Provider.name)).all()
@@ -1879,6 +2083,11 @@ def monitoring_page_context(
         "recent_checks": recent_checks,
         "providers": providers,
         "proxies": all_proxies(db),
+        "notification_channels": all_notification_channels(db),
+        "notification_channel_labels": NOTIFICATION_CHANNEL_TYPE_LABELS,
+        "task_channel_ids": monitoring_task_channel_ids,
+        "task_channels_summary": monitoring_task_channels_summary,
+        "notification_summary": monitoring_notification_summary,
         "telegram_config": read_telegram_config(db),
         "vault_state": scheduler_vault_state(),
         "task_is_running": monitoring_task_is_running,
@@ -1909,8 +2118,9 @@ def parse_monitoring_task_form(
     notify_on_recovery: bool = True,
     notify_on_failure: bool = False,
     notification_preferences_present: bool = False,
+    notification_channel_ids: list[int] | None = None,
     current_route: str | None = None,
-) -> tuple[dict[str, Any], list[str], Provider | None]:
+) -> tuple[dict[str, Any], list[str], Provider | None, list[NotificationChannel]]:
     errors: list[str] = []
     clean_name = name.strip()
     clean_model = model_id.strip()
@@ -1956,6 +2166,10 @@ def parse_monitoring_task_form(
         errors.append("重试间隔必须在 1 到 300 秒之间。")
     if notification_preferences_present and not (notify_on_recovery or notify_on_failure):
         errors.append("请至少选择一种通知类型。")
+    selected_channels, channel_errors = parse_notification_channel_ids(db, notification_channel_ids)
+    errors.extend(channel_errors)
+    if notification_preferences_present and (notify_on_recovery or notify_on_failure) and not selected_channels:
+        errors.append("请选择至少一个通知渠道。")
     route_error = validate_test_network_route(db, network_route, current_route)
     if route_error:
         errors.append(route_error)
@@ -1970,14 +2184,16 @@ def parse_monitoring_task_form(
         "retry_interval_seconds": parsed_retry_interval_seconds,
         "notify_on_recovery": notify_on_recovery,
         "notify_on_failure": notify_on_failure,
+        "notification_channel_ids": [channel.id for channel in selected_channels],
     }
-    return values, errors, provider
+    return values, errors, provider, selected_channels
 
 
 def apply_monitoring_task_values(
     task: MonitoringTask,
     values: dict[str, Any],
     provider: Provider,
+    channels: list[NotificationChannel],
     *,
     enabled: bool,
 ) -> None:
@@ -1988,6 +2204,7 @@ def apply_monitoring_task_values(
         task.network_route,
         task.notify_on_recovery,
         task.notify_on_failure,
+        tuple(monitoring_task_channel_ids(task)),
     )
     new_config = (
         provider.id,
@@ -1996,6 +2213,7 @@ def apply_monitoring_task_values(
         values["network_route"],
         values["notify_on_recovery"],
         values["notify_on_failure"],
+        tuple(channel.id for channel in channels),
     )
     task.name = values["name"]
     task.provider_id = provider.id
@@ -2009,6 +2227,7 @@ def apply_monitoring_task_values(
     task.retry_interval_seconds = values["retry_interval_seconds"]
     task.notify_on_recovery = values["notify_on_recovery"]
     task.notify_on_failure = values["notify_on_failure"]
+    set_monitoring_task_channels(task, channels)
     task.enabled = enabled
     if old_config != new_config:
         task.current_success_notified = False
@@ -2023,6 +2242,8 @@ def monitoring_page(
     panel: Annotated[str | None, Query()] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
+    migrate_legacy_telegram_channel(db, require_session_fernet(request))
+    db.commit()
     return render(request, "monitoring.html", monitoring_page_context(db, active_panel=panel))
 
 
@@ -2059,6 +2280,235 @@ def monitoring_lock(
     return redirect("/monitoring?panel=vault")
 
 
+def notification_channel_or_404(db: Session, channel_id: int) -> NotificationChannel:
+    channel = db.scalar(
+        select(NotificationChannel)
+        .where(NotificationChannel.id == channel_id)
+        .options(selectinload(NotificationChannel.proxy))
+    )
+    if channel is None:
+        raise HTTPException(status_code=404, detail="通知渠道不存在。")
+    return channel
+
+
+def notification_channels_context(
+    db: Session,
+    *,
+    form_values: dict[str, Any] | None = None,
+    errors: list[str] | None = None,
+    editing_channel: NotificationChannel | None = None,
+) -> dict[str, Any]:
+    return {
+        "channels": all_notification_channels(db),
+        "editing_channel": editing_channel,
+        "form_values": form_values or {},
+        "errors": errors or [],
+        "proxies": all_proxies(db),
+        "channel_type_labels": NOTIFICATION_CHANNEL_TYPE_LABELS,
+        "channel_has_credentials": notification_channel_has_secret,
+        "channel_label": notification_channel_label,
+    }
+
+
+def serialize_notification_channel(
+    channel: NotificationChannel,
+    *,
+    include_secrets: bool,
+    fernet,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "name": channel.name,
+        "channel_type": channel.channel_type,
+        "enabled": channel.enabled,
+        "proxy": channel.proxy.name if channel.proxy else None,
+        "config": channel_config(channel),
+        "has_credentials": channel_has_credentials(channel),
+    }
+    if include_secrets:
+        item["secrets"] = channel_secrets(channel, fernet)
+    return item
+
+
+@app.get("/notification-channels", response_class=HTMLResponse)
+def notification_channels_page(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    migrate_legacy_telegram_channel(db, require_session_fernet(request))
+    db.commit()
+    return render(request, "notification_channels.html", notification_channels_context(db))
+
+
+@app.post("/notification-channels")
+def notification_channel_create(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    name: Annotated[str, Form()] = "",
+    channel_type: Annotated[str, Form()] = CHANNEL_TYPE_TELEGRAM,
+    proxy_id: Annotated[str, Form()] = "",
+    enabled: Annotated[str | None, Form()] = None,
+    bot_token: Annotated[str, Form()] = "",
+    chat_id: Annotated[str, Form()] = "",
+    webhook_url: Annotated[str, Form()] = "",
+    webhook_token: Annotated[str, Form()] = "",
+    signing_secret: Annotated[str, Form()] = "",
+    app_id: Annotated[str, Form()] = "",
+    app_secret: Annotated[str, Form()] = "",
+    receive_id_type: Annotated[str, Form()] = "chat_id",
+    receive_id: Annotated[str, Form()] = "",
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    fernet = require_session_fernet(request)
+    values = notification_channel_form_values(
+        name=name,
+        channel_type=channel_type,
+        proxy_id=proxy_id,
+        enabled=enabled,
+        bot_token=bot_token,
+        chat_id=chat_id,
+        webhook_url=webhook_url,
+        webhook_token=webhook_token,
+        signing_secret=signing_secret,
+        app_id=app_id,
+        app_secret=app_secret,
+        receive_id_type=receive_id_type,
+        receive_id=receive_id,
+    )
+    errors = validate_notification_channel_values(db, values)
+    if errors:
+        return render(request, "notification_channels.html", notification_channels_context(db, form_values=values, errors=errors), 400)
+    channel = NotificationChannel()
+    apply_notification_channel_values(channel, values, fernet)
+    db.add(channel)
+    db.commit()
+    flash(request, f"通知渠道“{channel.name}”已创建。")
+    return redirect("/notification-channels")
+
+
+@app.get("/notification-channels/{channel_id}/edit", response_class=HTMLResponse)
+def notification_channel_edit_page(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    channel_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    channel = notification_channel_or_404(db, channel_id)
+    values = {
+        "name": channel.name,
+        "channel_type": channel.channel_type,
+        "proxy_id": str(channel.proxy_id or ""),
+        "enabled": channel.enabled,
+        **channel_config(channel),
+    }
+    return render(
+        request,
+        "notification_channels.html",
+        notification_channels_context(db, form_values=values, editing_channel=channel),
+    )
+
+
+@app.post("/notification-channels/{channel_id}")
+def notification_channel_update(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    channel_id: int,
+    name: Annotated[str, Form()] = "",
+    channel_type: Annotated[str, Form()] = CHANNEL_TYPE_TELEGRAM,
+    proxy_id: Annotated[str, Form()] = "",
+    enabled: Annotated[str | None, Form()] = None,
+    bot_token: Annotated[str, Form()] = "",
+    chat_id: Annotated[str, Form()] = "",
+    webhook_url: Annotated[str, Form()] = "",
+    webhook_token: Annotated[str, Form()] = "",
+    signing_secret: Annotated[str, Form()] = "",
+    app_id: Annotated[str, Form()] = "",
+    app_secret: Annotated[str, Form()] = "",
+    receive_id_type: Annotated[str, Form()] = "chat_id",
+    receive_id: Annotated[str, Form()] = "",
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    fernet = require_session_fernet(request)
+    channel = notification_channel_or_404(db, channel_id)
+    values = notification_channel_form_values(
+        name=name,
+        channel_type=channel_type,
+        proxy_id=proxy_id,
+        enabled=enabled,
+        bot_token=bot_token,
+        chat_id=chat_id,
+        webhook_url=webhook_url,
+        webhook_token=webhook_token,
+        signing_secret=signing_secret,
+        app_id=app_id,
+        app_secret=app_secret,
+        receive_id_type=receive_id_type,
+        receive_id=receive_id,
+    )
+    errors = validate_notification_channel_values(db, values, existing=channel)
+    if errors:
+        return render(
+            request,
+            "notification_channels.html",
+            notification_channels_context(db, form_values=values, errors=errors, editing_channel=channel),
+            400,
+        )
+    old_name = channel.name
+    apply_notification_channel_values(channel, values, fernet)
+    for link in channel.task_links:
+        link.channel_name_snapshot = channel.name
+        link.channel_type_snapshot = channel.channel_type
+    db.commit()
+    flash(request, f"通知渠道“{old_name}”已更新。")
+    return redirect("/notification-channels")
+
+
+@app.post("/notification-channels/{channel_id}/toggle")
+def notification_channel_toggle(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    channel_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    channel = notification_channel_or_404(db, channel_id)
+    channel.enabled = not channel.enabled
+    db.commit()
+    flash(request, f"通知渠道“{channel.name}”已{'启用' if channel.enabled else '停用'}。")
+    return redirect("/notification-channels")
+
+
+@app.post("/notification-channels/{channel_id}/test")
+async def notification_channel_test(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    channel_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    channel = notification_channel_or_404(db, channel_id)
+    try:
+        await send_test_notification_channel(db, channel, require_session_fernet(request))
+    except Exception as exc:
+        flash(request, f"测试消息发送失败：{sanitize_proxy_error(exc)}", "error")
+        return redirect("/notification-channels")
+    flash(request, f"通知渠道“{channel.name}”测试消息已发送。")
+    return redirect("/notification-channels")
+
+
+@app.post("/notification-channels/{channel_id}/delete")
+def notification_channel_delete(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    channel_id: int,
+    _: Annotated[None, Depends(current_user_required)] = None,
+) -> Response:
+    channel = notification_channel_or_404(db, channel_id)
+    name = channel.name
+    db.delete(channel)
+    db.commit()
+    flash(request, f"通知渠道“{name}”已删除。")
+    return redirect("/notification-channels")
+
+
 @app.post("/monitoring/telegram")
 def monitoring_telegram_save(
     request: Request,
@@ -2080,10 +2530,10 @@ def monitoring_telegram_save(
             proxy = None
         if proxy is None:
             flash(request, "Telegram 代理不存在。", "error")
-            return redirect("/monitoring?panel=telegram")
+            return redirect("/notification-channels")
         if not proxy.enabled:
             flash(request, "不能选择已禁用的 Telegram 代理。", "error")
-            return redirect("/monitoring?panel=telegram")
+            return redirect("/notification-channels")
     if clean_token:
         set_setting(db, SETTING_TELEGRAM_BOT_TOKEN, encrypt_secret_with_fernet(clean_token, fernet))
     if clean_chat_id:
@@ -2095,12 +2545,14 @@ def monitoring_telegram_save(
     )
     if should_enable and not has_credentials:
         flash(request, "启用 Telegram 前请先填写 Bot Token 和 Chat ID。", "error")
-        return redirect("/monitoring?panel=telegram")
+        return redirect("/notification-channels")
     set_setting(db, SETTING_TELEGRAM_ENABLED, "true" if should_enable else "false")
     set_setting(db, SETTING_TELEGRAM_PROXY_ID, clean_proxy_id)
+    db.flush()
+    migrate_legacy_telegram_channel(db, fernet)
     db.commit()
     flash(request, "Telegram 通知配置已保存。")
-    return redirect("/monitoring?panel=telegram")
+    return redirect("/notification-channels")
 
 
 @app.post("/monitoring/telegram/test")
@@ -2113,9 +2565,9 @@ async def monitoring_telegram_test(
         await send_test_telegram_message(db, require_session_fernet(request))
     except Exception as exc:
         flash(request, f"测试消息发送失败：{sanitize_proxy_error(exc)}", "error")
-        return redirect("/monitoring?panel=telegram")
+        return redirect("/notification-channels")
     flash(request, "Telegram 测试消息已发送。")
-    return redirect("/monitoring?panel=telegram")
+    return redirect("/notification-channels")
 
 
 @app.post("/monitoring/tasks")
@@ -2133,10 +2585,11 @@ def monitoring_task_create(
     notify_on_recovery: Annotated[str | None, Form()] = None,
     notify_on_failure: Annotated[str | None, Form()] = None,
     notification_preferences_present: Annotated[str | None, Form()] = None,
+    notification_channel_ids: Annotated[list[int] | None, Form()] = None,
     enabled: Annotated[str | None, Form()] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
-    values, errors, provider = parse_monitoring_task_form(
+    values, errors, provider, selected_channels = parse_monitoring_task_form(
         db,
         name=name,
         provider_id=provider_id,
@@ -2149,6 +2602,7 @@ def monitoring_task_create(
         notify_on_recovery=True if notification_preferences_present is None else notify_on_recovery == "on",
         notify_on_failure=False if notification_preferences_present is None else notify_on_failure == "on",
         notification_preferences_present=notification_preferences_present == "1",
+        notification_channel_ids=notification_channel_ids,
     )
     should_enable = enabled == "on"
     if should_enable and scheduler_vault_state() != "ready":
@@ -2166,7 +2620,7 @@ def monitoring_task_create(
             400,
         )
     task = MonitoringTask()
-    apply_monitoring_task_values(task, values, provider, enabled=should_enable)
+    apply_monitoring_task_values(task, values, provider, selected_channels, enabled=should_enable)
     db.add(task)
     db.commit()
     flash(request, f"监控任务“{task.name}”已创建。")
@@ -2188,6 +2642,9 @@ def monitoring_task_edit_page(
             "task": task,
             "providers": list(db.scalars(select(Provider).where(Provider.archived_at.is_(None)).order_by(Provider.name)).all()),
             "proxies": all_proxies(db),
+            "notification_channels": all_notification_channels(db),
+            "notification_channel_labels": NOTIFICATION_CHANNEL_TYPE_LABELS,
+            "task_channel_ids": monitoring_task_channel_ids,
             "errors": [],
             "client_profile_labels": CLIENT_PROFILE_LABELS,
             "min_interval": MONITORING_MIN_INTERVAL_MINUTES,
@@ -2216,11 +2673,12 @@ def monitoring_task_update(
     notify_on_recovery: Annotated[str | None, Form()] = None,
     notify_on_failure: Annotated[str | None, Form()] = None,
     notification_preferences_present: Annotated[str | None, Form()] = None,
+    notification_channel_ids: Annotated[list[int] | None, Form()] = None,
     enabled: Annotated[str | None, Form()] = None,
     _: Annotated[None, Depends(current_user_required)] = None,
 ) -> Response:
     task = monitoring_task_or_404(db, task_id)
-    values, errors, provider = parse_monitoring_task_form(
+    values, errors, provider, selected_channels = parse_monitoring_task_form(
         db,
         name=name,
         provider_id=provider_id,
@@ -2233,6 +2691,7 @@ def monitoring_task_update(
         notify_on_recovery=True if notification_preferences_present is None else notify_on_recovery == "on",
         notify_on_failure=False if notification_preferences_present is None else notify_on_failure == "on",
         notification_preferences_present=notification_preferences_present == "1",
+        notification_channel_ids=notification_channel_ids,
         current_route=task.network_route,
     )
     should_enable = enabled == "on"
@@ -2246,6 +2705,9 @@ def monitoring_task_update(
                 "task": task,
                 "providers": list(db.scalars(select(Provider).where(Provider.archived_at.is_(None)).order_by(Provider.name)).all()),
                 "proxies": all_proxies(db),
+                "notification_channels": all_notification_channels(db),
+                "notification_channel_labels": NOTIFICATION_CHANNEL_TYPE_LABELS,
+                "task_channel_ids": monitoring_task_channel_ids,
                 "errors": errors,
                 "form_values": {**values, "enabled": should_enable},
                 "client_profile_labels": CLIENT_PROFILE_LABELS,
@@ -2258,7 +2720,7 @@ def monitoring_task_update(
             },
             400,
         )
-    apply_monitoring_task_values(task, values, provider, enabled=should_enable)
+    apply_monitoring_task_values(task, values, provider, selected_channels, enabled=should_enable)
     db.commit()
     flash(request, f"监控任务“{task.name}”已更新。")
     return redirect("/monitoring")
@@ -2414,11 +2876,17 @@ def export_json(
         )
         .order_by(ScheduledTask.name)
     ).all()
+    migrate_legacy_telegram_channel(db, fernet)
+    db.flush()
     monitoring_tasks = db.scalars(
         select(MonitoringTask)
-        .options(selectinload(MonitoringTask.provider))
+        .options(
+            selectinload(MonitoringTask.provider),
+            selectinload(MonitoringTask.notification_links).selectinload(MonitoringTaskNotificationChannel.channel),
+        )
         .order_by(MonitoringTask.name)
     ).all()
+    notification_channels = all_notification_channels(db)
     telegram_config = read_telegram_config(db)
     telegram_proxy = db.get(NetworkProxy, telegram_config.proxy_id) if telegram_config.proxy_id is not None else None
     telegram_payload: dict[str, Any] = {
@@ -2436,7 +2904,7 @@ def export_json(
             decrypt_secret_with_fernet(encrypted_chat_id, fernet) if encrypted_chat_id else ""
         )
     payload = {
-        "version": 9,
+        "version": 10,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "contains_secrets": include_secret_values,
         "groups": [],
@@ -2444,6 +2912,7 @@ def export_json(
         "providers": [],
         "schedules": [],
         "monitoring_tasks": [],
+        "notification_channels": [],
         "telegram": telegram_payload,
     }
     for group in all_provider_groups(db):
@@ -2473,6 +2942,10 @@ def export_json(
                 "timezone": task.timezone_name,
             }
         )
+    for channel in notification_channels:
+        payload["notification_channels"].append(
+            serialize_notification_channel(channel, include_secrets=include_secret_values, fernet=fernet)
+        )
     for task in monitoring_tasks:
         payload["monitoring_tasks"].append(
             {
@@ -2490,6 +2963,11 @@ def export_json(
                 "retry_interval_seconds": task.retry_interval_seconds,
                 "notify_on_recovery": task.notify_on_recovery,
                 "notify_on_failure": task.notify_on_failure,
+                "notification_channels": [
+                    link.channel.name if link.channel else link.channel_name_snapshot
+                    for link in task.notification_links
+                    if link.channel is not None or link.channel_name_snapshot
+                ],
             }
         )
 
@@ -2521,6 +2999,7 @@ async def import_json(
     schedules = payload.get("schedules", []) if isinstance(payload, dict) else None
     monitoring_tasks = payload.get("monitoring_tasks", []) if isinstance(payload, dict) else None
     telegram = payload.get("telegram", {}) if isinstance(payload, dict) else None
+    notification_channels_payload = payload.get("notification_channels", []) if isinstance(payload, dict) else None
     if not isinstance(providers, list):
         flash(request, "导入失败：JSON 必须包含 providers 数组。", "error")
         return redirect("/import-export")
@@ -2539,6 +3018,9 @@ async def import_json(
     if not isinstance(telegram, dict):
         flash(request, "导入失败：telegram 必须是对象。", "error")
         return redirect("/import-export")
+    if not isinstance(notification_channels_payload, list):
+        flash(request, "导入失败：notification_channels 必须是数组。", "error")
+        return redirect("/import-export")
 
     fernet = require_session_fernet(request)
     created = 0
@@ -2550,6 +3032,8 @@ async def import_json(
     schedule_updated = 0
     monitoring_created = 0
     monitoring_updated = 0
+    notification_channel_created = 0
+    notification_channel_updated = 0
     errors: list[str] = []
     for index, item in enumerate(groups, start=1):
         if not isinstance(item, dict):
@@ -2642,6 +3126,65 @@ async def import_json(
             )
         if "enabled" in telegram:
             set_setting(db, SETTING_TELEGRAM_ENABLED, "true" if bool(telegram.get("enabled")) else "false")
+
+    imported_channels_by_name: dict[str, NotificationChannel] = {}
+    for index, item in enumerate(notification_channels_payload, start=1):
+        if not isinstance(item, dict):
+            errors.append(f"通知渠道第 {index} 条：渠道必须是对象。")
+            continue
+        channel_name = str(item.get("name") or "").strip()
+        channel_type = str(item.get("channel_type") or "").strip()
+        if not channel_name:
+            errors.append(f"通知渠道第 {index} 条：渠道名称不能为空。")
+            continue
+        if len(channel_name) > 160:
+            errors.append(f"通知渠道第 {index} 条：渠道名称不能超过 160 个字符。")
+            continue
+        if channel_type not in VALID_NOTIFICATION_CHANNEL_TYPES:
+            errors.append(f"通知渠道第 {index} 条：通知渠道类型无效。")
+            continue
+        channel_proxy_name = item.get("proxy")
+        channel_proxy: NetworkProxy | None = None
+        if channel_proxy_name not in (None, ""):
+            if not isinstance(channel_proxy_name, str):
+                errors.append(f"通知渠道第 {index} 条：proxy 必须是代理名称或 null。")
+                continue
+            channel_proxy = db.scalar(select(NetworkProxy).where(NetworkProxy.name == channel_proxy_name.strip()))
+            if channel_proxy is None:
+                errors.append(f"通知渠道第 {index} 条：找不到代理“{channel_proxy_name}”。")
+                continue
+        raw_config = item.get("config", {})
+        if not isinstance(raw_config, dict):
+            errors.append(f"通知渠道第 {index} 条：config 必须是对象。")
+            continue
+        raw_secrets = item.get("secrets", {})
+        if not isinstance(raw_secrets, dict):
+            errors.append(f"通知渠道第 {index} 条：secrets 必须是对象。")
+            continue
+        channel = db.scalar(select(NotificationChannel).where(NotificationChannel.name == channel_name))
+        if channel is None:
+            channel = NotificationChannel(name=channel_name, channel_type=channel_type)
+            db.add(channel)
+            notification_channel_created += 1
+        else:
+            notification_channel_updated += 1
+        channel.channel_type = channel_type
+        channel.enabled = bool(item.get("enabled", True))
+        channel.proxy_id = channel_proxy.id if channel_proxy else None
+        channel.config_json = json.dumps(raw_config, ensure_ascii=False)
+        if raw_secrets:
+            channel.encrypted_secret_json = encrypt_channel_secrets(raw_secrets, fernet)
+        elif not channel.encrypted_secret_json:
+            channel.encrypted_secret_json = ""
+        db.flush()
+        imported_channels_by_name[channel.name] = channel
+
+    if not notification_channels_payload:
+        migrated_channel = migrate_legacy_telegram_channel(db, fernet)
+        if migrated_channel is not None:
+            imported_channels_by_name[migrated_channel.name] = migrated_channel
+    for channel in all_notification_channels(db):
+        imported_channels_by_name.setdefault(channel.name, channel)
 
     for index, item in enumerate(providers, start=1):
         if not isinstance(item, dict):
@@ -2855,7 +3398,27 @@ async def import_json(
         else:
             errors.append(f"监控任务第 {index} 条：network_route 无效。")
             continue
-        values, task_errors, parsed_provider = parse_monitoring_task_form(
+        raw_channel_names = item.get("notification_channels", [])
+        selected_channels: list[NotificationChannel] = []
+        if raw_channel_names in (None, ""):
+            raw_channel_names = []
+        if not isinstance(raw_channel_names, list):
+            errors.append(f"监控任务第 {index} 条：notification_channels 必须是数组。")
+            continue
+        for raw_channel_name in raw_channel_names:
+            channel_name = str(raw_channel_name or "").strip()
+            if not channel_name:
+                continue
+            channel = imported_channels_by_name.get(channel_name)
+            if channel is None:
+                errors.append(f"监控任务第 {index} 条：找不到通知渠道“{channel_name}”。")
+                continue
+            selected_channels.append(channel)
+        if not selected_channels:
+            default_channel = imported_channels_by_name.get("默认 Telegram")
+            if default_channel is not None:
+                selected_channels.append(default_channel)
+        values, task_errors, parsed_provider, parsed_channels = parse_monitoring_task_form(
             db,
             name=task_name,
             provider_id=str(provider.id),
@@ -2867,6 +3430,7 @@ async def import_json(
             retry_interval_seconds=str(item.get("retry_interval_seconds") or "10"),
             notify_on_recovery=bool(item.get("notify_on_recovery", True)),
             notify_on_failure=bool(item.get("notify_on_failure", False)),
+            notification_channel_ids=[channel.id for channel in selected_channels],
         )
         if task_errors or parsed_provider is None:
             errors.append(f"监控任务第 {index} 条：{' '.join(task_errors)}")
@@ -2878,14 +3442,15 @@ async def import_json(
             monitoring_created += 1
         else:
             monitoring_updated += 1
-        apply_monitoring_task_values(task, values, parsed_provider, enabled=False)
+        apply_monitoring_task_values(task, values, parsed_provider, parsed_channels, enabled=False)
 
     for group in all_provider_groups(db):
         delete_group_if_empty(db, group.id)
     db.commit()
     message = (
         f"导入完成：分组新增 {group_created} 个；代理新增 {proxy_created} 个、更新 {proxy_updated} 个；"
-        f"中转站新增 {created} 个、更新 {updated} 个；定时任务新增 {schedule_created} 个、更新 {schedule_updated} 个（均已停用）；"
+        f"中转站新增 {created} 个、更新 {updated} 个；通知渠道新增 {notification_channel_created} 个、更新 {notification_channel_updated} 个；"
+        f"定时任务新增 {schedule_created} 个、更新 {schedule_updated} 个（均已停用）；"
         f"监控任务新增 {monitoring_created} 个、更新 {monitoring_updated} 个（均已停用）"
     )
     if errors:
