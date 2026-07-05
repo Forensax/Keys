@@ -2559,7 +2559,7 @@ def monitoring_telegram_save(
     set_setting(db, SETTING_TELEGRAM_ENABLED, "true" if should_enable else "false")
     set_setting(db, SETTING_TELEGRAM_PROXY_ID, clean_proxy_id)
     db.flush()
-    migrate_legacy_telegram_channel(db, fernet)
+    migrate_legacy_telegram_channel(db, fernet, force=True)
     db.commit()
     flash(request, "Telegram 通知配置已保存。")
     return redirect("/notification-channels")
@@ -3190,7 +3190,7 @@ async def import_json(
         imported_channels_by_name[channel.name] = channel
 
     if not notification_channels_payload:
-        migrated_channel = migrate_legacy_telegram_channel(db, fernet)
+        migrated_channel = migrate_legacy_telegram_channel(db, fernet, force=True)
         if migrated_channel is not None:
             imported_channels_by_name[migrated_channel.name] = migrated_channel
     for channel in all_notification_channels(db):

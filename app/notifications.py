@@ -104,8 +104,10 @@ def legacy_telegram_channel(db: Session) -> NotificationChannel | None:
     return db.scalar(select(NotificationChannel).where(NotificationChannel.name == "默认 Telegram"))
 
 
-def migrate_legacy_telegram_channel(db: Session, fernet: Fernet) -> NotificationChannel | None:
+def migrate_legacy_telegram_channel(db: Session, fernet: Fernet, *, force: bool = False) -> NotificationChannel | None:
     channel = legacy_telegram_channel(db)
+    if get_setting(db, SETTING_LEGACY_TELEGRAM_MIGRATED) == "true" and not force:
+        return channel
     encrypted_token = get_setting(db, SETTING_TELEGRAM_BOT_TOKEN)
     encrypted_chat_id = get_setting(db, SETTING_TELEGRAM_CHAT_ID)
     if encrypted_token and encrypted_chat_id:

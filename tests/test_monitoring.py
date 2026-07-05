@@ -1226,6 +1226,15 @@ def test_telegram_config_is_encrypted_and_test_message_uses_proxy(monkeypatch) -
     page = client.get(f"/notification-channels/{channel_id}/edit")
     assert "123:token" not in page.text
     assert "已保存，留空则不修改" in page.text
+
+    deleted = client.post(f"/notification-channels/{channel_id}/delete", follow_redirects=False)
+    assert deleted.status_code == 303
+    assert deleted.headers["location"] == "/notification-channels"
+    after_delete = client.get("/notification-channels")
+    assert "共 0 个渠道" in after_delete.text
+    with SessionLocal() as db:
+        assert get_setting(db, "telegram_bot_token_encrypted")
+        assert db.scalar(select(NotificationChannel).where(NotificationChannel.name == "默认 Telegram")) is None
     client.close()
 
 
