@@ -1926,15 +1926,28 @@ def parse_notification_channel_ids(db: Session, raw_ids: list[int] | None) -> tu
 
 
 def set_monitoring_task_channels(task: MonitoringTask, channels: list[NotificationChannel]) -> None:
-    task.notification_links.clear()
-    for channel in channels:
-        task.notification_links.append(
-            MonitoringTaskNotificationChannel(
-                channel_id=channel.id,
-                channel_name_snapshot=channel.name,
-                channel_type_snapshot=channel.channel_type,
+    selected_by_id = {channel.id: channel for channel in channels if channel.id is not None}
+    existing_by_channel_id = {
+        link.channel_id: link for link in task.notification_links if link.channel_id is not None
+    }
+
+    for link in list(task.notification_links):
+        if link.channel_id not in selected_by_id:
+            task.notification_links.remove(link)
+
+    for channel_id, channel in selected_by_id.items():
+        link = existing_by_channel_id.get(channel_id)
+        if link is None:
+            task.notification_links.append(
+                MonitoringTaskNotificationChannel(
+                    channel_id=channel.id,
+                    channel_name_snapshot=channel.name,
+                    channel_type_snapshot=channel.channel_type,
+                )
             )
-        )
+        else:
+            link.channel_name_snapshot = channel.name
+            link.channel_type_snapshot = channel.channel_type
 
 
 def notification_channel_form_values(

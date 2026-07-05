@@ -460,6 +460,117 @@ def test_notification_channel_page_creates_and_tests_tg_and_feishu_channels(monk
     client.close()
 
 
+def test_monitoring_task_edit_updates_notification_channels_without_duplicates() -> None:
+    client = setup_client()
+    provider_id = create_provider(client)
+    telegram_id = create_telegram_channel(client)
+    webhook = client.post(
+        "/notification-channels",
+        data={
+            "name": "飞书 Webhook",
+            "channel_type": "feishu_webhook",
+            "webhook_token": "hook-token",
+            "enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert webhook.status_code == 303
+    with SessionLocal() as db:
+        webhook_channel = db.scalar(select(NotificationChannel).where(NotificationChannel.name == "飞书 Webhook"))
+        assert webhook_channel is not None
+        webhook_id = webhook_channel.id
+
+    created = client.post(
+        "/monitoring/tasks",
+        data={
+            "name": "watch channels",
+            "provider_id": str(provider_id),
+            "model_id": "gpt-watch",
+            "client_profile": CLIENT_PROFILE_CODEX,
+            "network_route": "direct",
+            "interval_minutes": "5",
+            "retry_attempts": "2",
+            "retry_interval_seconds": "10",
+            "notification_preferences_present": "1",
+            "notify_on_recovery": "on",
+            "notification_channel_ids": str(telegram_id),
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    with SessionLocal() as db:
+        task = db.scalar(select(MonitoringTask).where(MonitoringTask.name == "watch channels"))
+        assert task is not None
+        task_id = task.id
+        links = list(
+            db.scalars(
+                select(MonitoringTaskNotificationChannel).where(
+                    MonitoringTaskNotificationChannel.task_id == task_id
+                )
+            )
+        )
+        assert [(link.channel_id, link.channel_name_snapshot) for link in links] == [(telegram_id, "TG 主群")]
+
+    update_common = {
+        "name": "watch channels",
+        "provider_id": str(provider_id),
+        "model_id": "gpt-watch",
+        "client_profile": CLIENT_PROFILE_CODEX,
+        "network_route": "direct",
+        "interval_minutes": "5",
+        "retry_attempts": "2",
+        "retry_interval_seconds": "10",
+        "notification_preferences_present": "1",
+        "notify_on_recovery": "on",
+    }
+    expanded = client.post(
+        f"/monitoring/tasks/{task_id}",
+        data={**update_common, "notification_channel_ids": [str(telegram_id), str(webhook_id)]},
+        follow_redirects=False,
+    )
+    assert expanded.status_code == 303
+    with SessionLocal() as db:
+        links = list(
+            db.scalars(
+                select(MonitoringTaskNotificationChannel)
+                .where(MonitoringTaskNotificationChannel.task_id == task_id)
+                .order_by(MonitoringTaskNotificationChannel.channel_name_snapshot)
+            )
+        )
+        assert [(link.channel_id, link.channel_name_snapshot) for link in links] == [
+            (telegram_id, "TG 主群"),
+            (webhook_id, "飞书 Webhook"),
+        ]
+
+    reduced = client.post(
+        f"/monitoring/tasks/{task_id}",
+        data={**update_common, "notification_channel_ids": [str(webhook_id)]},
+        follow_redirects=False,
+    )
+    assert reduced.status_code == 303
+    with SessionLocal() as db:
+        links = list(
+            db.scalars(
+                select(MonitoringTaskNotificationChannel).where(
+                    MonitoringTaskNotificationChannel.task_id == task_id
+                )
+            )
+        )
+        assert [(link.channel_id, link.channel_name_snapshot) for link in links] == [(webhook_id, "飞书 Webhook")]
+        duplicate_count = len(
+            list(
+                db.scalars(
+                    select(MonitoringTaskNotificationChannel).where(
+                        MonitoringTaskNotificationChannel.task_id == task_id,
+                        MonitoringTaskNotificationChannel.channel_id == webhook_id,
+                    )
+                )
+            )
+        )
+        assert duplicate_count == 1
+    client.close()
+
+
 def test_send_test_notification_channel_sets_checked_time(monkeypatch) -> None:
     fernet = Fernet(Fernet.generate_key())
     captured: dict[str, str | None] = {}
