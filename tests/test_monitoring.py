@@ -634,14 +634,19 @@ def test_feishu_notification_card_uses_card_layout_without_telegram_html() -> No
 
     assert card["config"]["wide_screen_mode"] is False
     assert card["header"]["template"] == "green"
-    assert card["header"]["title"]["content"] == "中转站恢复可用"
+    assert card["header"]["title"]["content"] == "Any Router恢复可用"
     assert "fields" not in card["elements"][0]
     assert card["elements"][0]["text"]["tag"] == "lark_md"
     assert "**状态**：恢复可用" in card["elements"][0]["text"]["content"]
     assert "<b>" not in rendered
+    assert "中转站恢复可用" not in rendered
     assert "Any Router 监控" in rendered
     assert "4208 ms" in rendered
     assert "2026-07-06 10:52:20" in rendered
+
+    failure_card = notifications_module.build_feishu_notification_card(task, check, "failure")
+    assert failure_card["header"]["template"] == "red"
+    assert failure_card["header"]["title"]["content"] == "Any Router变为不可用"
 
 
 def test_post_feishu_webhook_message_sends_interactive_card(monkeypatch) -> None:

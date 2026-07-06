@@ -294,7 +294,8 @@ def feishu_card_line(label: str, value: object, *, max_length: int = 600) -> str
 
 def build_feishu_notification_card(task: MonitoringTask, check: MonitoringCheck, event: str) -> dict[str, object]:
     is_failure = event == "failure"
-    title = "中转站变为不可用" if is_failure else "中转站恢复可用"
+    site_name = clean_feishu_text(check.provider_name_snapshot or task.provider_name_snapshot or task.name, max_length=40)
+    title = f"{site_name}变为不可用" if is_failure else f"{site_name}恢复可用"
     status = "不可用" if is_failure else "恢复可用"
     latency_or_error = (check.error_message or "未返回具体错误") if is_failure else (
         "未知" if check.latency_ms is None else f"{check.latency_ms} ms"
