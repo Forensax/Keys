@@ -291,7 +291,10 @@ def test_monitoring_page_create_task_and_requires_vault_for_enabled_task() -> No
     assert "暂无可用率 · 故障 0 次" in task_table
     assert "monitoring-timeline-lane is-success" in task_table
     assert "monitoring-timeline-lane is-failed" in task_table
-    assert "恢复" in task_table
+    assert "monitoring-channel-summary" in task_table
+    assert "未选择渠道" in task_table
+    assert '<span class="muted small">恢复</span>' not in task_table
+    assert "恢复/不可用" not in task_table
     assert "立即检测" in task_table
     assert "停用" in task_table
     assert "编辑" in task_table

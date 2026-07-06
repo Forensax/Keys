@@ -133,7 +133,6 @@
               <td class="mono">{{ task.model_id }}</td>
               <td class="monitoring-period-cell">
                 <span>每 {{ task.interval_minutes }} 分钟 · 重试 {{ task.retry_attempts }} 次</span>
-                <span class="muted small">{% if task.notify_on_recovery and task.notify_on_failure %}恢复/不可用{% elif task.notify_on_failure %}不可用{% else %}恢复{% endif %}</span>
                 <span class="muted small monitoring-channel-summary">{{ task_channels_summary(task) }}</span>
               </td>
               <td>
