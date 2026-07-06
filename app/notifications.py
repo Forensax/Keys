@@ -267,14 +267,88 @@ def build_notification_message(task: MonitoringTask, check: MonitoringCheck, eve
     return build_failure_message(task, check) if event == "failure" else build_recovery_message(task, check)
 
 
+def clean_feishu_text(value: object, *, max_length: int = 600) -> str:
+    text = str(value or "").strip().replace("\r\n", "\n").replace("\r", "\n")
+    if not text:
+        return "未知"
+    if len(text) > max_length:
+        return text[: max_length - 3].rstrip() + "..."
+    return text
+
+
+def escape_feishu_lark_md(value: object, *, max_length: int = 600) -> str:
+    text = clean_feishu_text(value, max_length=max_length)
+    return (
+        text.replace("\\", "\\\\")
+        .replace("*", "\\*")
+        .replace("_", "\\_")
+        .replace("`", "\\`")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+    )
+
+
+def feishu_card_field(label: str, value: object, *, short: bool = True, max_length: int = 600) -> dict[str, object]:
+    return {
+        "is_short": short,
+        "text": {
+            "tag": "lark_md",
+            "content": f"**{label}**\n{escape_feishu_lark_md(value, max_length=max_length)}",
+        },
+    }
+
+
+def build_feishu_notification_card(task: MonitoringTask, check: MonitoringCheck, event: str) -> dict[str, object]:
+    is_failure = event == "failure"
+    title = "中转站变为不可用" if is_failure else "中转站恢复可用"
+    status = "不可用" if is_failure else "恢复可用"
+    latency_or_error = (check.error_message or "未返回具体错误") if is_failure else (
+        "未知" if check.latency_ms is None else f"{check.latency_ms} ms"
+    )
+    latency_or_error_label = "错误" if is_failure else "延迟"
+    latency_or_error_max_length = 900 if is_failure else 200
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "red" if is_failure else "green",
+            "title": {"tag": "plain_text", "content": title},
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "fields": [
+                    feishu_card_field("状态", status),
+                    feishu_card_field("监控任务", task.name),
+                    feishu_card_field("站点", check.provider_name_snapshot),
+                    feishu_card_field("模型", check.model_id),
+                    feishu_card_field("客户端", check.client_profile),
+                    feishu_card_field("网络", check.network_route),
+                    feishu_card_field(
+                        latency_or_error_label,
+                        latency_or_error,
+                        short=not is_failure,
+                        max_length=latency_or_error_max_length,
+                    ),
+                    feishu_card_field("时间", format_telegram_time(check.checked_at)),
+                ],
+            }
+        ],
+    }
+
+
 async def post_feishu_webhook_message(
     *,
     webhook_url: str,
-    text: str,
+    text: str = "",
+    card: dict[str, object] | None = None,
     signing_secret: str = "",
     proxy_url: str | None = None,
 ) -> None:
-    payload: dict[str, object] = {"msg_type": "text", "content": {"text": text}}
+    payload: dict[str, object]
+    if card is None:
+        payload = {"msg_type": "text", "content": {"text": text}}
+    else:
+        payload = {"msg_type": "interactive", "card": card}
     if signing_secret:
         timestamp = str(int(datetime.now().timestamp()))
         sign_key = f"{timestamp}\n{signing_secret}".encode("utf-8")
@@ -300,7 +374,8 @@ async def post_feishu_app_message(
     app_secret: str,
     receive_id_type: str,
     receive_id: str,
-    text: str,
+    text: str = "",
+    card: dict[str, object] | None = None,
     proxy_url: str | None = None,
 ) -> None:
     async with httpx.AsyncClient(timeout=10.0, proxy=proxy_url, trust_env=False) as client:
@@ -319,8 +394,8 @@ async def post_feishu_app_message(
             headers={"Authorization": f"Bearer {tenant_access_token}"},
             json={
                 "receive_id": receive_id,
-                "msg_type": "text",
-                "content": json.dumps({"text": text}, ensure_ascii=False),
+                "msg_type": "text" if card is None else "interactive",
+                "content": json.dumps({"text": text} if card is None else card, ensure_ascii=False),
             },
         )
         if message_response.is_error:
@@ -373,8 +448,8 @@ async def send_notification_channel_message(
         secret = channel_secrets(channel, fernet)
         config = channel_config(channel)
         proxy_url = notification_channel_proxy_url(db, channel, fernet)
-        text = build_notification_message(task, check, event)
         if channel.channel_type == CHANNEL_TYPE_TELEGRAM:
+            text = build_notification_message(task, check, event)
             await post_telegram_message(
                 bot_token=str(secret.get("bot_token") or ""),
                 chat_id=str(secret.get("chat_id") or ""),
@@ -382,19 +457,21 @@ async def send_notification_channel_message(
                 proxy_url=proxy_url,
             )
         elif channel.channel_type == CHANNEL_TYPE_FEISHU_WEBHOOK:
+            card = build_feishu_notification_card(task, check, event)
             await post_feishu_webhook_message(
                 webhook_url=webhook_url_from_secret(secret),
                 signing_secret=str(secret.get("signing_secret") or ""),
-                text=text,
+                card=card,
                 proxy_url=proxy_url,
             )
         elif channel.channel_type == CHANNEL_TYPE_FEISHU_APP:
+            card = build_feishu_notification_card(task, check, event)
             await post_feishu_app_message(
                 app_id=str(secret.get("app_id") or ""),
                 app_secret=str(secret.get("app_secret") or ""),
                 receive_id_type=str(config.get("receive_id_type") or "chat_id"),
                 receive_id=str(secret.get("receive_id") or ""),
-                text=text,
+                card=card,
                 proxy_url=proxy_url,
             )
         else:

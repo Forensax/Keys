@@ -612,6 +612,106 @@ def test_send_test_notification_channel_sets_checked_time(monkeypatch) -> None:
     assert time_line != "时间：未知"
 
 
+def test_feishu_notification_card_uses_card_layout_without_telegram_html() -> None:
+    task = MonitoringTask(name="Any Router 监控", provider_name_snapshot="Any Router", model_id="gpt-5.5")
+    check = MonitoringCheck(
+        task_name_snapshot="Any Router 监控",
+        provider_name_snapshot="Any Router",
+        provider_base_url_snapshot="https://relay.example/v1",
+        model_id="gpt-5.5",
+        client_profile="codex",
+        network_route="直连",
+        status="success",
+        latency_ms=4208,
+        checked_at=datetime(2026, 7, 6, 10, 52, 20, tzinfo=timezone.utc),
+    )
+
+    card = notifications_module.build_feishu_notification_card(task, check, "recovery")
+    rendered = json.dumps(card, ensure_ascii=False)
+
+    assert card["header"]["template"] == "green"
+    assert card["header"]["title"]["content"] == "中转站恢复可用"
+    assert "<b>" not in rendered
+    assert "Any Router 监控" in rendered
+    assert "4208 ms" in rendered
+    assert "2026-07-06 10:52:20" in rendered
+
+
+def test_post_feishu_webhook_message_sends_interactive_card(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    card = {"config": {"wide_screen_mode": True}, "elements": []}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, *, json):
+            captured["url"] = url
+            captured["json"] = json
+            return httpx.Response(200, json={"code": 0}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(notifications_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    asyncio.run(
+        notifications_module.post_feishu_webhook_message(
+            webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test-token",
+            card=card,
+            proxy_url="http://proxy.example:1080",
+        )
+    )
+
+    assert captured["client_kwargs"]["proxy"] == "http://proxy.example:1080"
+    assert captured["json"] == {"msg_type": "interactive", "card": card}
+
+
+def test_post_feishu_app_message_sends_interactive_card(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    card = {"config": {"wide_screen_mode": True}, "elements": []}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, **kwargs):
+            calls.append({"url": url, **kwargs})
+            if url.endswith("/tenant_access_token/internal"):
+                return httpx.Response(
+                    200,
+                    json={"code": 0, "tenant_access_token": "tenant-token"},
+                    request=httpx.Request("POST", url),
+                )
+            return httpx.Response(200, json={"code": 0}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(notifications_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    asyncio.run(
+        notifications_module.post_feishu_app_message(
+            app_id="cli_test",
+            app_secret="app-secret",
+            receive_id_type="chat_id",
+            receive_id="oc_test",
+            card=card,
+        )
+    )
+
+    message_payload = calls[1]["json"]
+    assert message_payload["receive_id"] == "oc_test"
+    assert message_payload["msg_type"] == "interactive"
+    assert json.loads(message_payload["content"]) == card
+
+
 def test_monitoring_page_renders_24_hour_status_timeline() -> None:
     client = setup_client()
     provider_id = create_provider(client)
