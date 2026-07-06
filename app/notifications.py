@@ -288,14 +288,8 @@ def escape_feishu_lark_md(value: object, *, max_length: int = 600) -> str:
     )
 
 
-def feishu_card_field(label: str, value: object, *, short: bool = True, max_length: int = 600) -> dict[str, object]:
-    return {
-        "is_short": short,
-        "text": {
-            "tag": "lark_md",
-            "content": f"**{label}**\n{escape_feishu_lark_md(value, max_length=max_length)}",
-        },
-    }
+def feishu_card_line(label: str, value: object, *, max_length: int = 600) -> str:
+    return f"**{label}**：{escape_feishu_lark_md(value, max_length=max_length)}"
 
 
 def build_feishu_notification_card(task: MonitoringTask, check: MonitoringCheck, event: str) -> dict[str, object]:
@@ -307,8 +301,24 @@ def build_feishu_notification_card(task: MonitoringTask, check: MonitoringCheck,
     )
     latency_or_error_label = "错误" if is_failure else "延迟"
     latency_or_error_max_length = 900 if is_failure else 200
+    content = "\n".join(
+        [
+            feishu_card_line("状态", status),
+            feishu_card_line("监控任务", task.name),
+            feishu_card_line("站点", check.provider_name_snapshot),
+            feishu_card_line("模型", check.model_id),
+            feishu_card_line("客户端", check.client_profile),
+            feishu_card_line("网络", check.network_route),
+            feishu_card_line(
+                latency_or_error_label,
+                latency_or_error,
+                max_length=latency_or_error_max_length,
+            ),
+            feishu_card_line("时间", format_telegram_time(check.checked_at)),
+        ]
+    )
     return {
-        "config": {"wide_screen_mode": True},
+        "config": {"wide_screen_mode": False},
         "header": {
             "template": "red" if is_failure else "green",
             "title": {"tag": "plain_text", "content": title},
@@ -316,21 +326,7 @@ def build_feishu_notification_card(task: MonitoringTask, check: MonitoringCheck,
         "elements": [
             {
                 "tag": "div",
-                "fields": [
-                    feishu_card_field("状态", status),
-                    feishu_card_field("监控任务", task.name),
-                    feishu_card_field("站点", check.provider_name_snapshot),
-                    feishu_card_field("模型", check.model_id),
-                    feishu_card_field("客户端", check.client_profile),
-                    feishu_card_field("网络", check.network_route),
-                    feishu_card_field(
-                        latency_or_error_label,
-                        latency_or_error,
-                        short=not is_failure,
-                        max_length=latency_or_error_max_length,
-                    ),
-                    feishu_card_field("时间", format_telegram_time(check.checked_at)),
-                ],
+                "text": {"tag": "lark_md", "content": content},
             }
         ],
     }
