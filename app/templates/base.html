@@ -4,11 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v=20260623-monitoring">
+    <link rel="icon" type="image/png" href="{{ url_for('static', path='/site-logo.png') }}?v=20260710">
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v=20260710-logo">
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="/">{{ app_name }}</a>
+      <a class="brand" href="/">
+        <img class="brand-logo" src="{{ url_for('static', path='/site-logo.png') }}?v=20260710" alt="" width="32" height="32" aria-hidden="true">
+        <span class="brand-name">{{ app_name }}</span>
+      </a>
       {% if authenticated %}
         <nav class="nav">
           <a href="/">首页</a>

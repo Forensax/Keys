@@ -32,6 +32,24 @@ from app.proxy_support import ProxyTestResult  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+
+def test_site_logo_is_rendered_and_served() -> None:
+    client = TestClient(app)
+
+    page = client.get("/setup")
+    assert page.status_code == 200
+    assert 'rel="icon" type="image/png"' in page.text
+    assert 'class="brand-logo"' in page.text
+    assert 'class="brand-name"' in page.text
+    assert page.text.count("site-logo.png?v=20260710") == 2
+    assert "styles.css?v=20260710-logo" in page.text
+
+    logo = client.get("/static/site-logo.png")
+    assert logo.status_code == 200
+    assert logo.headers["content-type"] == "image/png"
+    assert logo.content == (PROJECT_ROOT / "app" / "static" / "site-logo.png").read_bytes()
+
+
 def setup_and_create_provider(client: TestClient, name: str = "Relay") -> int:
     client.post(
         "/setup",

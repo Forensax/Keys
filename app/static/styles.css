@@ -47,9 +47,25 @@ a:hover {
 }
 
 .brand {
+  align-items: center;
   color: var(--text);
+  display: inline-flex;
+  flex: 0 0 auto;
   font-size: 18px;
   font-weight: 700;
+  gap: 8px;
+}
+
+.brand:hover {
+  text-decoration: none;
+}
+
+.brand-logo {
+  border-radius: 50%;
+  flex: 0 0 32px;
+  height: 32px;
+  object-fit: cover;
+  width: 32px;
 }
 
 .nav {
