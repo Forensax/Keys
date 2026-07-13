@@ -4,13 +4,13 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
-    <link rel="icon" type="image/png" href="{{ url_for('static', path='/site-logo.png') }}?v=20260710">
-    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v=20260710-logo">
+    <link rel="icon" type="image/png" href="{{ url_for('static', path='/site-logo.png') }}?v=20260714-redesign">
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v=20260714-redesign">
   </head>
   <body>
     <header class="topbar">
       <a class="brand" href="/">
-        <img class="brand-logo" src="{{ url_for('static', path='/site-logo.png') }}?v=20260710" alt="" width="32" height="32" aria-hidden="true">
+        <img class="brand-logo" src="{{ url_for('static', path='/site-logo.png') }}?v=20260714-redesign" alt="" width="24" height="24" aria-hidden="true">
         <span class="brand-name">{{ app_name }}</span>
       </a>
       {% if authenticated %}
@@ -39,6 +39,6 @@
     </main>
     <div class="copy-toast" data-copy-toast aria-live="polite"></div>
     <div class="response-tooltip" data-response-tooltip-popup role="tooltip" hidden></div>
-    <script src="{{ url_for('static', path='/app.js') }}?v=20260623-monitoring"></script>
+    <script src="{{ url_for('static', path='/app.js') }}?v=20260714-redesign"></script>
   </body>
 </html>

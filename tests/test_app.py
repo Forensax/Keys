@@ -41,13 +41,22 @@ def test_site_logo_is_rendered_and_served() -> None:
     assert 'rel="icon" type="image/png"' in page.text
     assert 'class="brand-logo"' in page.text
     assert 'class="brand-name"' in page.text
-    assert page.text.count("site-logo.png?v=20260710") == 2
-    assert "styles.css?v=20260710-logo" in page.text
+    assert page.text.count("site-logo.png?v=20260714-redesign") == 2
+    assert "styles.css?v=20260714-redesign" in page.text
 
     logo = client.get("/static/site-logo.png")
     assert logo.status_code == 200
     assert logo.headers["content-type"] == "image/png"
     assert logo.content == (PROJECT_ROOT / "app" / "static" / "site-logo.png").read_bytes()
+
+
+def test_mobile_topbar_expands_for_wrapped_navigation() -> None:
+    styles = (PROJECT_ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    mobile_styles = styles.split("@media (max-width: 820px)", 1)[1]
+    assert ".topbar {" in mobile_styles
+    assert "height: auto;" in mobile_styles
+    assert "min-height: 48px;" in mobile_styles
 
 
 def setup_and_create_provider(client: TestClient, name: str = "Relay") -> int:
